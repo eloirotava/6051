@@ -2154,7 +2154,7 @@ static int ssv6200_start(struct ieee80211_hw *hw)
 	return 0;
 }
 
-static void ssv6200_stop(struct ieee80211_hw *hw)
+static void ssv6200_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct ssv_softc *sc = hw->priv;
 	u32 count = 0;
@@ -2190,7 +2190,7 @@ static void ssv6200_stop(struct ieee80211_hw *hw)
 	}
 	sc->watchdog_flag = WD_SLEEP;
 	mutex_unlock(&sc->mutex);
-	del_timer_sync(&sc->watchdog_timeout);
+	timer_delete_sync(&sc->watchdog_timeout);
 #ifdef CONFIG_SSV_SMARTLINK
 	{
 		extern void ksmartlink_exit(void);
@@ -2418,7 +2418,7 @@ int ssv6xxx_watchdog_controller(struct ssv_hw *sh, u8 flag)
 	return ret;
 }
 
-static int ssv6200_config(struct ieee80211_hw *hw, u32 changed)
+static int ssv6200_config(struct ieee80211_hw *hw, int link_id, u32 changed)
 {
 	struct ssv_softc *sc = hw->priv;
 	int ret = 0;

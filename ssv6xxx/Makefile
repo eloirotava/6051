@@ -51,7 +51,7 @@ endif
 
 include $(KBUILD_TOP)/platform-config.mak
 
-EXTRA_CFLAGS := -I$(KBUILD_TOP) -I$(KBUILD_TOP)/include #-Wno-error=missing-attributes
+EXTRA_CFLAGS := -I$(src) -I$(src)/include #-Wno-error=missing-attributes
 DEF_PARSER_H = $(KBUILD_TOP)/include/ssv_conf_parser.h
 
 OBJS := ssvdevice/ssvdevice.c \
@@ -105,3 +105,6 @@ ifndef DESTDIR
 endif
 
 .PHONY: all modules clean install
+
+ccflags-y += -I$(src)/include -I$(src)/hci -I$(src)/smac -I$(src)/hwif/sdio -I$(src)/ssvdevice
+ccflags-y += -I$(src)

@@ -1,3 +1,4 @@
+#include <linux/timer.h>
 /*
  * Copyright (c) 2015 South Silicon Valley Microelectronics Inc.
  * Copyright (c) 2015 iComm Corporation
@@ -15,6 +16,8 @@
  */
 
 #include <linux/module.h>
+#include <linux/timer.h>
+#include <linux/timer.h>
 #include <linux/platform_device.h>
 #include <linux/nl80211.h>
 #include <linux/kthread.h>
@@ -323,7 +326,7 @@ void ssv6200_watchdog_timeout(struct timer_list *t)
 {
 	static u32 count = 0;
 	struct rssi_res_st *rssi_tmp0 = NULL, *rssi_tmp1 = NULL;
-	struct ssv_softc *sc = from_timer(sc, t, watchdog_timeout);
+	struct ssv_softc *sc = container_of(t, struct ssv_softc, watchdog_timeout);
 	if (sc->watchdog_flag == WD_BARKING) {
 		ssv6xxx_watchdog_restart_hw(sc);
 		mod_timer(&sc->watchdog_timeout, jiffies + WATCHDOG_TIMEOUT);
@@ -461,7 +464,7 @@ static int ssv6xxx_deinit_softc(struct ssv_softc *sc)
 	ssv6xxx_rate_control_unregister();
 	cancel_delayed_work_sync(&sc->bcast_tx_work);
 	//ssv6xxx_watchdog_controller(sc->sh ,(u8)SSV6XXX_HOST_CMD_WATCHDOG_STOP);
-	del_timer_sync(&sc->watchdog_timeout);
+	timer_delete_sync(&sc->watchdog_timeout);
 	cancel_delayed_work(&sc->thermal_monitor_work);
 	sc->ps_status = PWRSV_PREPARE;
 	flush_workqueue(sc->thermal_wq);
@@ -1291,7 +1294,7 @@ int ssv6xxx_dev_probe(struct platform_device *pdev)
 }
 
 EXPORT_SYMBOL(ssv6xxx_dev_probe);
-int ssv6xxx_dev_remove(struct platform_device *pdev)
+void ssv6xxx_dev_remove(struct platform_device *pdev)
 {
 	struct ieee80211_hw *hw = dev_get_drvdata(&pdev->dev);
 	struct ssv_softc *softc = hw->priv;
@@ -1300,7 +1303,7 @@ int ssv6xxx_dev_remove(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "ieee80211_free_hw(): \n");
 	ieee80211_free_hw(hw);
 	dev_info(&pdev->dev, "driver unloaded\n");
-	return 0;
+	return;
 }
 
 EXPORT_SYMBOL(ssv6xxx_dev_remove);
