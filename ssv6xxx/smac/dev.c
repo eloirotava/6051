@@ -1125,7 +1125,7 @@ static int _set_pairwise_key_tkip_ccmp(struct ssv_softc *sc,
 		sta_priv->need_sw_decrypt = false;
 		if ((cipher == SSV_CIPHER_TKIP)
 		    || ((!(sc->sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX) ||
-			 (sta_priv->sta_info->sta->ht_cap.ht_supported ==
+			 (0 ==
 			  false))
 			&& (vif_priv->force_sw_encrypt == false))) {
 			dev_dbg(sc->dev,
@@ -1566,7 +1566,7 @@ u32 _process_tx_done(struct ssv_softc *sc)
 #ifdef REPORT_TX_DONE_IN_IRQ
 		ieee80211_tx_status_irqsafe(sc->hw, skb);
 #else
-		ieee80211_tx_status(sc->hw, skb);
+		ieee80211_tx_status_ni(sc->hw, skb);
 		if (skb_queue_len(&sc->rx_skb_q))
 			break;
 #endif
@@ -2507,7 +2507,7 @@ static void ssv6200_config_filter(struct ieee80211_hw *hw,
 static void ssv6200_bss_info_changed(struct ieee80211_hw *hw,
 				     struct ieee80211_vif *vif,
 				     struct ieee80211_bss_conf *info,
-				     u32 changed)
+				     u64 changed)
 {
 	struct ssv_vif_priv_data *priv_vif = (struct ssv_vif_priv_data *)vif->drv_priv;
 	struct ssv_softc *sc = hw->priv;
@@ -2587,7 +2587,7 @@ static void ssv6200_bss_info_changed(struct ieee80211_hw *hw,
 	if (vif->type == NL80211_IFTYPE_STATION) {
 		dev_dbg(sc->dev, "NL80211_IFTYPE_STATION!!\n");
 		if ((changed & BSS_CHANGED_ASSOC) && (vif->p2p == 0)) {
-			sc->isAssoc = info->assoc;
+			// sc->isAssoc = info->assoc;
 			if (!sc->isAssoc) {
 				sc->channel_center_freq = 0;
 				sc->ps_aid = 0;
@@ -2600,8 +2600,8 @@ static void ssv6200_bss_info_changed(struct ieee80211_hw *hw,
 				struct ieee80211_channel *curchan;
 				curchan = hw->conf.chandef.chan;
 				sc->channel_center_freq = curchan->center_freq;
-				dev_dbg(sc->dev, "info->aid = %d\n", info->aid);
-				sc->ps_aid = info->aid;
+				// dev_dbg(sc->dev, "info->aid = %d\n", info->aid);
+				// sc->ps_aid = info->aid;
 #ifdef CONFIG_SSV_MRX_EN3_CTRL
 				SMAC_REG_WRITE(sc->sh, ADR_MRX_FLT_EN3, 0x1000);
 #endif
@@ -3008,7 +3008,7 @@ static int ssv6200_set_tim(struct ieee80211_hw *hw, struct ieee80211_sta *sta,
 }
 
 static int ssv6200_conf_tx(struct ieee80211_hw *hw,
-			   struct ieee80211_vif *vif, u16 queue,
+			   struct ieee80211_vif *vif, unsigned int ac, u16 queue,
 			   const struct ieee80211_tx_queue_params *params)
 {
 	struct ssv_softc *sc = hw->priv;

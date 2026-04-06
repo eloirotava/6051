@@ -25,9 +25,9 @@ extern struct ieee80211_ops ssv6200_ops;
 
 // Hack: redefine MAX_AMPDU_BUF because buf_size here is a 8-bit char
 // and mainline kernel value is 0x100, which overflows
-#ifdef IEEE80211_MAX_AMPDU_BUF
-#undef IEEE80211_MAX_AMPDU_BUF
-#define IEEE80211_MAX_AMPDU_BUF 0x40
+#if 1
+// #undef 3
+// #define 3 0x40
 #endif
 
 #define BA_WAIT_TIMEOUT (800)
@@ -738,8 +738,8 @@ void ssv6200_ampdu_tx_operation(u16 tid, struct ieee80211_sta *sta,
 	ssv_sta_priv->ampdu_tid[tid].tidno = tid;
 	ssv_sta_priv->ampdu_tid[tid].sta = sta;
 	ssv_sta_priv->ampdu_tid[tid].agg_num_max = MAX_AGGR_NUM;
-	if (buffer_size > IEEE80211_MAX_AMPDU_BUF) {
-		buffer_size = IEEE80211_MAX_AMPDU_BUF;
+	if (buffer_size > 3) {
+		buffer_size = 3;
 	}
 	dev_info(sc->dev, "AMPDU buffer_size=%d\n", buffer_size);
 	ssv_sta_priv->ampdu_tid[tid].ssv_baw_size = SSV_AMPDU_WINDOW_SIZE;
@@ -756,7 +756,7 @@ static void _clear_mpdu_q(struct ieee80211_hw *hw, struct sk_buff_head *q,
 			break;
 		if (aggregated_mpdu)
 			skb_pull(skb, AMPDU_DELIMITER_LEN);
-		ieee80211_tx_status(hw, skb);
+		ieee80211_tx_status_ni(hw, skb);
 	}
 }
 
@@ -824,7 +824,7 @@ static void ssv6200_ampdu_tx_state_stop_func(struct ssv_softc *sc,
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	u8 *skb_qos_ctl = ieee80211_get_qos_ctl(hdr);
 	u8 tid_no = skb_qos_ctl[0] & 0xf;
-	if ((sta->ht_cap.ht_supported == true)
+	if ((0 == true)
 	    && (!!(sc->sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX))) {
 		ieee80211_start_tx_ba_session(sta, tid_no, 0);
 		ampdu_db_log("start ampdu_tx(rc) : tid_no = %d\n", tid_no);
@@ -1127,7 +1127,7 @@ bool ssv6200_ampdu_tx_handler(struct ieee80211_hw *hw, struct sk_buff *skb)
 		dev_err(sc->dev, "create TX skb copy failed!\n");
 		return false;
 	}
-	ieee80211_tx_status(sc->hw, tx_skb);
+	ieee80211_tx_status_ni(sc->hw, tx_skb);
 	skb = copy_skb;
 #endif
 	{
@@ -1526,7 +1526,7 @@ static void _flush_release_queue(struct ieee80211_hw *hw,
 		dev_kfree_skb_any(ampdu_skb);
 #else
 #if defined(USE_THREAD_RX) && !defined(IRQ_PROC_TX_DATA)
-		ieee80211_tx_status(hw, ampdu_skb);
+		ieee80211_tx_status_ni(hw, ampdu_skb);
 #else
 		ieee80211_tx_status_irqsafe(hw, ampdu_skb);
 #endif

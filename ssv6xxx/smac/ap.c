@@ -308,7 +308,7 @@ void ssv6xxx_beacon_change(struct ssv_softc *sc, struct ieee80211_hw *hw,
 		return;
 	}
 	do {
-		skb = ieee80211_beacon_get_tim(hw, vif,
+		skb = ieee80211_beacon_get_tim(hw, vif, 0,
 					       &tim_offset, &tim_length);
 		if (skb == NULL) {
 			printk("[Error]........skb is NULL\n");

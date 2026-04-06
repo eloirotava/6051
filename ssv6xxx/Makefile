@@ -89,7 +89,7 @@ obj-$(CONFIG_SSV6200_CORE) += $(KMODULE_NAME).o
 all: modules
 
 modules:
-	ARCH=arm $(MAKE) -C $(KBUILD) M=$(KBUILD_TOP)
+	$(MAKE) -C $(KBUILD) M=$(KBUILD_TOP)
 
 clean:
 	find -type f -iname '*.o' -exec rm {} \;

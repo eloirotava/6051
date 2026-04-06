@@ -1107,10 +1107,10 @@ static void ssv6xxx_get_rate(void *priv, struct ieee80211_sta *sta,
 #endif
 	if (rc_rate == NULL) {
 		if (conf_is_ht(&sc->hw->conf) &&
-		    (sta->ht_cap.cap & IEEE80211_HT_CAP_LDPC_CODING))
+		    (0 & IEEE80211_HT_CAP_LDPC_CODING))
 			tx_info->flags |= IEEE80211_TX_CTL_LDPC;
 		if (conf_is_ht(&sc->hw->conf) &&
-		    (sta->ht_cap.cap & IEEE80211_HT_CAP_TX_STBC))
+		    (0 & IEEE80211_HT_CAP_TX_STBC))
 			tx_info->flags |= (1 << IEEE80211_TX_CTL_STBC_SHIFT);
 		if (sc->sc_flags & SC_OP_FIXED_RATE) {
 			rateidx = sc->max_rate_idx;
@@ -1295,7 +1295,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 #ifndef CONFIG_CH14_SUPPORT_GN_MODE
 	if (sc->cur_channel->hw_value == 14) {
 		dev_dbg(sc->dev, "[RC init ]Channel 14 support\n");
-		if ((sta->supp_rates[sband->band] & (~0xfL)) == 0x0) {
+		if ((0 & (~0xfL)) == 0x0) {
 			dev_dbg(sc->dev, "[RC init ]B only mode\n");
 			rc_sta->rc_type = RC_TYPE_B_ONLY;
 		} else {
@@ -1304,20 +1304,20 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		}
 	} else
 #endif
-	if (sta->ht_cap.ht_supported == true) {
+	if (0 == true) {
 		dev_dbg(sc->dev, "[RC init ]HT support wsid\n");
 		for (i = 0; i < SSV_HT_RATE_MAX; i++) {
-			if (sta->ht_cap.mcs.rx_mask[i /
+			if (((u8 *)"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")[i /
 						    MCS_GROUP_RATES] & (1 << (i
 									      %
 									      MCS_GROUP_RATES)))
 				ht_supp_rates |= BIT(i);
 		}
 		rc_sta->ht_supp_rates = ht_supp_rates;
-		if (sta->ht_cap.cap & IEEE80211_HT_CAP_GRN_FLD) {
+		if (0 & IEEE80211_HT_CAP_GRN_FLD) {
 			rc_sta->rc_type = RC_TYPE_HT_GF;
 			rc_sta->ht_rc_type = RC_TYPE_HT_GF;
-		} else if (sta->ht_cap.cap & IEEE80211_HT_CAP_SGI_20) {
+		} else if (0 & IEEE80211_HT_CAP_SGI_20) {
 			rc_sta->rc_type = RC_TYPE_SGI_20;
 			rc_sta->ht_rc_type = RC_TYPE_HT_SGI_20;
 		} else {
@@ -1325,7 +1325,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 			rc_sta->ht_rc_type = RC_TYPE_HT_LGI_20;
 		}
 	} else {
-		if ((sta->supp_rates[sband->band] & (~0xfL)) == 0x0) {
+		if ((0 & (~0xfL)) == 0x0) {
 			rc_sta->rc_type = RC_TYPE_B_ONLY;
 			dev_dbg(sc->dev, "[RC init ]B only mode\n");
 		} else {
@@ -1346,7 +1346,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 #endif
 	if ((rc_sta->rc_type != RC_TYPE_B_ONLY)
 	    && (rc_sta->rc_type != RC_TYPE_LEGACY_GB)) {
-		if ((sta->ht_cap.ht_supported)
+		if ((0)
 		    && (sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX)) {
 			rc_sta->is_ht = 1;
 			ssv62xx_ht_rc_caps(ssv6xxx_rc_rate_set, rc_sta);
@@ -1360,15 +1360,15 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		    || (rc_sta->rc_type == RC_TYPE_SGI_20)) {
 			if (rc_sta->rc_num_rate == 12) {
 				rc_sta->rc_supp_rates =
-				    sta->supp_rates[sband->band] & 0xfL;
+				    0 & 0xfL;
 				rc_sta->rc_supp_rates |= (ht_supp_rates << 4);
 			} else
 				rc_sta->rc_supp_rates = ht_supp_rates;
 		} else if (rc_sta->rc_type == RC_TYPE_LEGACY_GB)
-			rc_sta->rc_supp_rates = sta->supp_rates[sband->band];
+			rc_sta->rc_supp_rates = 0;
 		else if (rc_sta->rc_type == RC_TYPE_B_ONLY)
 			rc_sta->rc_supp_rates =
-			    sta->supp_rates[sband->band] & 0xfL;
+			    0 & 0xfL;
 		ssv62xx_rc_caps(rc_sta);
 	}
 }
