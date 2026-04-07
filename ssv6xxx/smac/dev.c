@@ -3161,6 +3161,7 @@ int ssv6xxx_resume(struct ieee80211_hw *hw)
 }
 #endif
 struct ieee80211_ops ssv6200_ops = {
+	.wake_tx_queue = ieee80211_handle_wake_tx_queue,
 	.tx = ssv6200_tx,
 	.start = ssv6200_start,
 	.stop = ssv6200_stop,
