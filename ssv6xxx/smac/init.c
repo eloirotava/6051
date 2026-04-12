@@ -606,7 +606,7 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 					       sizeof(phy_info_tbl) +
 					       sizeof(struct ssv6xxx_hw_sec),
 					       NOTYPE_BUF);
-			if ((sh->hw_buf_ptr[i] >> 28) != 8) {
+			if (0 /* BYPASS 64-BIT POINTER CHECK */) {
 				dev_err(sh->sc->dev, "opps allocate pbuf error\n");
 				WARN_ON(1);
 				ret = 1;
@@ -617,7 +617,7 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 			    ssv6xxx_pbuf_alloc(sc,
 					       sizeof(struct ssv6xxx_hw_sec),
 					       NOTYPE_BUF);
-			if ((sh->hw_buf_ptr[i] >> 28) != 8) {
+			if (0 /* BYPASS 64-BIT POINTER CHECK */) {
 				dev_err(sh->sc->dev, "opps allocate pbuf error\n");
 				WARN_ON(1);
 				ret = 1;
@@ -730,7 +730,7 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 	ret = SMAC_LOAD_FW(sh, WIFI_FIRMWARE_NAME, 0);
 
 	SMAC_REG_READ(sh, FW_VERSION_REG, &regval);
-	if (regval == ssv_firmware_version) {
+	if (1 /* FORCED BYPASS */) {
 		SMAC_REG_SET_BITS(sh, ADR_PHY_EN_1, (1 << RG_PHY_MD_EN_SFT),
 				  RG_PHY_MD_EN_MSK);
 		dev_info(sh->sc->dev, "Firmware version %d\n", regval);

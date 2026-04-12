@@ -1,3 +1,4 @@
+#define SDIO_USE_SLOW_CLOCK 1
 /*
  * Copyright (c) 2015 South Silicon Valley Microelectronics Inc.
  * Copyright (c) 2015 iComm Corporation
@@ -23,6 +24,30 @@
 #include <linux/mmc/sdio_ids.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/slab.h>
+
+static inline int ssv_safe_sdio_toio(struct sdio_func *f, unsigned int a, void *s, int c) {
+    void *b = kmalloc(c, GFP_ATOMIC);
+    int r;
+    if (!b) return -ENOMEM;
+    memcpy(b, s, c);
+    r = sdio_memcpy_toio(f, a, b, c);
+    kfree(b);
+    return r;
+}
+
+static inline int ssv_safe_sdio_fromio(struct sdio_func *f, void *d, unsigned int a, int c) {
+    void *b = kmalloc(c, GFP_ATOMIC);
+    int r;
+    if (!b) return -ENOMEM;
+    r = sdio_memcpy_fromio(f, b, a, c);
+    if (r == 0) memcpy(d, b, c);
+    kfree(b);
+    return r;
+}
+
+#define sdio_memcpy_toio ssv_safe_sdio_toio
+#define sdio_memcpy_fromio ssv_safe_sdio_fromio
 #include "sdio_def.h"
 #include <linux/pm_runtime.h>
 #include <linux/version.h>
