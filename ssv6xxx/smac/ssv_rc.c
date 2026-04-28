@@ -737,6 +737,7 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 	pinfo = &rc_sta->pinfo;
 	spinfo = &rc_sta->spinfo;
 	pidrate = rc_sta->pinfo.rinfo;
+
 	if (host_event->h_event == SOC_EVT_RC_AMPDU_REPORT) {
 		period = msecs_to_jiffies(HT_RC_UPDATE_INTERVAL);
 		if (time_after(jiffies, spinfo->last_sample + period)) {
@@ -752,11 +753,36 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 		}
 		return;
 	} else if (host_event->h_event == SOC_EVT_RC_MPDU_REPORT) {
-		;
+		/* =========================================================
+		 * BUGFIX ELOI: Algoritmo Dinâmico para o Modo 802.11g (MPDU)
+		 * Substitui o PID original e escala a velocidade instantaneamente
+		 * ========================================================= */
+		period = msecs_to_jiffies(HT_RC_UPDATE_INTERVAL);
+		if (time_after(jiffies, spinfo->last_sample + period)) {
+			if (report_data->rates[0].count > 0) {
+				int success_rate = (report_data->ampdu_ack_len * 100) / report_data->rates[0].count;
+				
+				if (success_rate >= 75) {
+					/* Sobe uma mudança se houver muito sucesso e não estiver no limite */
+					if (spinfo->txrate_idx < (rc_sta->rc_num_rate - 1))
+						spinfo->txrate_idx++;
+				} else if (success_rate <= 30) {
+					/* Desce uma mudança se os pacotes estiverem a falhar */
+					if (spinfo->txrate_idx > 0)
+						spinfo->txrate_idx--;
+				}
+			}
+			spinfo->last_sample = jiffies;
+		}
+		/* Retorna aqui para contornar o resto do código original do PID que é ineficaz */
+		return;
 	} else {
 		dev_warn(sc->dev, "RC report handler got garbage\n");
 		return;
 	}
+
+	/* O código original abaixo nunca será executado para os relatórios MPDU
+	   devido ao return inserido acima. Mantemos a estrutura por segurança. */
 	if (report_data->rates[0].data_rate < 7) {
 		if (report_data->rates[0].data_rate > 3) {
 			report_data->rates[0].data_rate -= 3;
