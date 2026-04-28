@@ -762,11 +762,11 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 			if (report_data->rates[0].count > 0) {
 				int success_rate = (report_data->ampdu_ack_len * 100) / report_data->rates[0].count;
 				
-				if (success_rate >= 75) {
+				if (success_rate >= 50) {
 					/* Sobe uma mudança se houver muito sucesso e não estiver no limite */
 					if (spinfo->txrate_idx < (rc_sta->rc_num_rate - 1))
 						spinfo->txrate_idx++;
-				} else if (success_rate <= 30) {
+				} else if (success_rate <= 10) {
 					/* Desce uma mudança se os pacotes estiverem a falhar */
 					if (spinfo->txrate_idx > 0)
 						spinfo->txrate_idx--;
@@ -1323,7 +1323,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		dev_dbg(sc->dev, "[RC init ]Channel 14 support\n");
 		if ((0 & (~0xfL)) == 0x0) {
 			dev_dbg(sc->dev, "[RC init ]B only mode\n");
-			rc_sta->rc_type = RC_TYPE_B_ONLY;
+			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
 		} else {
 			dev_dbg(sc->dev, "[RC init ]GB mode\n");
 			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
@@ -1352,7 +1352,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		}
 	} else {
 		if ((0 & (~0xfL)) == 0x0) {
-			rc_sta->rc_type = RC_TYPE_B_ONLY;
+			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
 			dev_dbg(sc->dev, "[RC init ]B only mode\n");
 		} else {
 			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
