@@ -222,6 +222,10 @@ static void ssv6xxx_set_80211_hw_capab(struct ssv_softc *sc)
 		}
 		if (sh->cfg.hw_caps & SSV6200_HT_CAP_SGI_20)
 			ht_info->cap |= IEEE80211_HT_CAP_SGI_20;
+
+                ht_info->cap |= IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+		ht_info->cap |= IEEE80211_HT_CAP_SGI_40;
+
 		ht_info->ampdu_factor = IEEE80211_HT_MAX_AMPDU_32K;
 		ht_info->ampdu_density = IEEE80211_HT_MPDU_DENSITY_8;
 		memset(&ht_info->mcs, 0, sizeof(ht_info->mcs));
