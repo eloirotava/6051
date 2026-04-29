@@ -1,0 +1,15 @@
+/workspaces/6051/ssv6xxx/ssvdevice/ssvdevice.o
+/workspaces/6051/ssv6xxx/ssvdevice/ssv_cmd.o
+/workspaces/6051/ssv6xxx/hci/ssv_hci.o
+/workspaces/6051/ssv6xxx/smac/init.o
+/workspaces/6051/ssv6xxx/smac/dev.o
+/workspaces/6051/ssv6xxx/smac/ssv_rc.o
+/workspaces/6051/ssv6xxx/smac/ssv_ht_rc.o
+/workspaces/6051/ssv6xxx/smac/ap.o
+/workspaces/6051/ssv6xxx/smac/ampdu.o
+/workspaces/6051/ssv6xxx/smac/efuse.o
+/workspaces/6051/ssv6xxx/smac/ssv_pm.o
+/workspaces/6051/ssv6xxx/smac/sar.o
+/workspaces/6051/ssv6xxx/hwif/sdio/sdio.o
+/workspaces/6051/ssv6xxx/ssv6051-generic-wlan.o
+/workspaces/6051/ssv6xxx/smac/ssv_cfgvendor.o
