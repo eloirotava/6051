@@ -51,7 +51,7 @@ endif
 
 include $(KBUILD_TOP)/platform-config.mak
 
-EXTRA_CFLAGS := -I$(src) -I$(src)/include #-Wno-error=missing-attributes
+EXTRA_CFLAGS := -I$(src) -I$(src)/include -Os
 DEF_PARSER_H = $(KBUILD_TOP)/include/ssv_conf_parser.h
 
 OBJS := ssvdevice/ssvdevice.c \
@@ -90,6 +90,7 @@ all: modules
 
 modules:
 	$(MAKE) -C $(KBUILD) M=$(KBUILD_TOP)
+	strip --strip-unneeded $(KMODULE_NAME).ko
 
 clean:
 	find -type f -iname '*.o' -exec rm {} \;

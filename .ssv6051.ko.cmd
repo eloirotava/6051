@@ -1,0 +1,1 @@
+savedcmd_ssv6051.ko := ld -r -EL  -maarch64elf -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/linux-headers-7.0.0/scripts/module.lds -o ssv6051.ko ssv6051.o ssv6051.mod.o .module-common.o
