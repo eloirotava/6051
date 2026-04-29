@@ -1,1 +1,0 @@
-savedcmd_ssv6051.mod := printf '%s\n'   ssvdevice/ssvdevice.o ssvdevice/ssv_cmd.o hci/ssv_hci.o smac/init.o smac/dev.o smac/ssv_rc.o smac/ssv_ht_rc.o smac/ap.o smac/ampdu.o smac/efuse.o smac/ssv_pm.o smac/sar.o hwif/sdio/sdio.o ssv6051-generic-wlan.o smac/ssv_cfgvendor.o | awk '!x[$$0]++ { print("./"$$0) }' > ssv6051.mod
