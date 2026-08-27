@@ -16,6 +16,7 @@
 
 #include <linux/nl80211.h>
 #include <linux/etherdevice.h>
+#include <linux/if_ether.h>
 #include <linux/delay.h>
 #include <linux/version.h>
 #include <linux/time.h>
@@ -41,6 +42,13 @@ struct rssi_res_st rssi_res, *p_rssi_res;
 #ifndef WLAN_CIPHER_SUITE_SMS4
 #define WLAN_CIPHER_SUITE_SMS4 0x00147201
 #endif
+
+/*
+ * The 6051 firmware/hardware crypto path corrupts CCMP frames on modern
+ * mac80211 (observed as an immediate MIC_FAILURE after the 4-way handshake).
+ * Let mac80211 handle WPA keys until that path is made reliable.
+ */
+#define SSV6XXX_FORCE_SW_CRYPTO 1
 #define MAX_TX_Q_LEN (64)
 #define LOW_TX_Q_LEN (MAX_TX_Q_LEN/2)
 static u16 bits_per_symbol[][2] = {
@@ -1117,10 +1125,11 @@ static int _set_pairwise_key_tkip_ccmp(struct ssv_softc *sc,
 	}
 	if (tkip_use_sw_cipher == true)
 		dev_info(sc->dev, "Using software TKIP cipher\n");
-	if ((((vif_priv->vif_idx == 0) && (tdls_use_sw_cipher == false)
-	      && (tkip_use_sw_cipher == false)))
-	    || ((cipher == SSV_CIPHER_CCMP)
-		&& (sc->sh->cfg.use_wpa2_only == 1))) {
+	if (!SSV6XXX_FORCE_SW_CRYPTO &&
+	    (((vif_priv->vif_idx == 0) && (tdls_use_sw_cipher == false) &&
+	      (tkip_use_sw_cipher == false)) ||
+	     ((cipher == SSV_CIPHER_CCMP) &&
+	      (sc->sh->cfg.use_wpa2_only == 1)))) {
 		sta_priv->has_hw_decrypt = true;
 		sta_priv->need_sw_decrypt = false;
 		if ((cipher == SSV_CIPHER_TKIP)
@@ -1184,9 +1193,10 @@ static int _set_group_key_tkip_ccmp(struct ssv_softc *sc,
 	if ((cipher == SSV_CIPHER_TKIP) && (sc->sh->cfg.use_wpa2_only == 1)) {
 		tkip_use_sw_cipher = true;
 	}
-	if (((vif_priv->vif_idx == 0) && (tkip_use_sw_cipher == false))
-	    || ((cipher == SSV_CIPHER_CCMP)
-		&& (sc->sh->cfg.use_wpa2_only == 1))) {
+	if (!SSV6XXX_FORCE_SW_CRYPTO &&
+	    (((vif_priv->vif_idx == 0) && (tkip_use_sw_cipher == false)) ||
+	     ((cipher == SSV_CIPHER_CCMP) &&
+	      (sc->sh->cfg.use_wpa2_only == 1)))) {
 		dev_dbg(sc->dev, "VIF %d uses HW %s cipher for group.\n",
 			vif_priv->vif_idx, cipher_name);
 #ifdef USE_MAC80211_DECRYPT_BROADCAST
@@ -1861,7 +1871,20 @@ static void _ssv6xxx_tx(struct ieee80211_hw *hw, struct sk_buff *skb)
 	int ret;
 	unsigned long flags;
 	bool send_hci = false;
+	bool is_eapol = skb->protocol == cpu_to_be16(ETH_P_PAE);
 	do {
+		/*
+		 * 802.1X carries the EAP/PEAP handshake.  It must not wait for
+		 * an AMPDU session and should use the latency-sensitive WMM queue.
+		 * Some APs retry the outer EAP request quickly when a TLS fragment
+		 * is delayed, which makes a best-effort EAPOL frame look like an
+		 * enterprise-authentication failure.
+		 */
+		if (is_eapol) {
+			skb_set_queue_mapping(skb, IEEE80211_AC_VO);
+			info->flags &= ~IEEE80211_TX_CTL_AMPDU;
+			info->flags |= IEEE80211_TX_CTL_REQ_TX_STATUS;
+		}
 		if (info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ) {
 			if (info->flags & IEEE80211_TX_CTL_FIRST_FRAGMENT)
 				sc->tx.seq_no += 0x10;
