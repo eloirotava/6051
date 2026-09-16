@@ -408,6 +408,8 @@ struct ssv_dev {
 	struct ieee80211_vif *vif;
 	struct ieee80211_sta __rcu *sta[SSV_NUM_HW_STA];
 	bool short_preamble;
+	struct ieee80211_sta *rx_ba_sta;	/* owner of the single RX BA session */
+	u16 rx_ba_tid;
 	u32 cca_control;
 	u32 cca_1;
 };
@@ -445,6 +447,7 @@ void ssv_wsid_del(struct ssv_dev *sd, int wsid);
 void ssv_update_ctrl_rates(struct ssv_dev *sd, u32 basic_rates);
 void ssv_rf_enable(struct ssv_dev *sd, bool on);
 void ssv_scan_cca(struct ssv_dev *sd, bool scanning);
+void ssv_rx_ba_session(struct ssv_dev *sd, const u8 *ta, u16 tid, u16 ssn);
 
 /* tx.c */
 int ssv_tx_init(struct ssv_dev *sd);

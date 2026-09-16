@@ -151,6 +151,10 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	struct ssv_sta *ss = (struct ssv_sta *)sta->drv_priv;
 
 	mutex_lock(&sd->mutex);
+	if (sd->rx_ba_sta == sta) {
+		ssv_rx_ba_session(sd, NULL, 0, 0);
+		sd->rx_ba_sta = NULL;
+	}
 	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_HW_STA &&
 	    rcu_access_pointer(sd->sta[ss->wsid]) == sta) {
 		RCU_INIT_POINTER(sd->sta[ss->wsid], NULL);
@@ -194,6 +198,38 @@ static void ssv_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *
 	mutex_unlock(&sd->mutex);
 }
 
+static int ssv_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			    struct ieee80211_ampdu_params *params)
+{
+	struct ssv_dev *sd = hw->priv;
+	int ret = 0;
+
+	mutex_lock(&sd->mutex);
+	switch (params->action) {
+	case IEEE80211_AMPDU_RX_START:
+		/* the MAC tracks a single RX Block Ack session */
+		if (sd->rx_ba_sta && (sd->rx_ba_sta != params->sta ||
+				      sd->rx_ba_tid != params->tid)) {
+			ret = -EBUSY;
+			break;
+		}
+		sd->rx_ba_sta = params->sta;
+		sd->rx_ba_tid = params->tid;
+		ssv_rx_ba_session(sd, params->sta->addr, params->tid, params->ssn);
+		break;
+	case IEEE80211_AMPDU_RX_STOP:
+		if (sd->rx_ba_sta == params->sta && sd->rx_ba_tid == params->tid) {
+			ssv_rx_ba_session(sd, NULL, 0, 0);
+			sd->rx_ba_sta = NULL;
+		}
+		break;
+	default:
+		ret = -EOPNOTSUPP;
+	}
+	mutex_unlock(&sd->mutex);
+	return ret;
+}
+
 /* The TX path reads wiphy->rts_threshold directly. */
 static int ssv_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx, u32 value)
 {
@@ -218,6 +254,7 @@ static const struct ieee80211_ops ssv_ops = {
 	.sta_remove = ssv_sta_remove,
 	.conf_tx = ssv_conf_tx,
 	.set_rts_threshold = ssv_set_rts_threshold,
+	.ampdu_action = ssv_ampdu_action,
 	.sw_scan_start = ssv_sw_scan_start,
 	.sw_scan_complete = ssv_sw_scan_complete,
 };
@@ -254,6 +291,8 @@ int ssv_mac_register(struct ssv_dev *sd)
 	ieee80211_hw_set(hw, SIGNAL_DBM);
 	ieee80211_hw_set(hw, HAS_RATE_CONTROL);
 	ieee80211_hw_set(hw, MFP_CAPABLE);
+	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
+	hw->max_rx_aggregation_subframes = 16;
 	hw->queues = IEEE80211_NUM_ACS;
 	hw->extra_tx_headroom = SSV_TX_DESC_LEN;
 	hw->max_rates = 1;

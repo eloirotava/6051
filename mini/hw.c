@@ -519,6 +519,7 @@ int ssv_hw_start(struct ssv_dev *sd)
 	if (ret)
 		return ret;
 
+	sd->rx_ba_sta = NULL;
 	sd->started = true;
 	ret = ssv_irq_enable(sd);
 	if (ret)
@@ -650,4 +651,20 @@ void ssv_scan_cca(struct ssv_dev *sd, bool scanning)
 		ssv_reg_write(sd, ADR_RX_11B_CCA_CONTROL, sd->cca_control);
 		ssv_reg_write(sd, ADR_RX_11B_CCA_1, sd->cca_1);
 	}
+}
+
+/* The MAC answers aggregates with Block Ack for one (TA, TID) at a time. */
+void ssv_rx_ba_session(struct ssv_dev *sd, const u8 *ta, u16 tid, u16 ssn)
+{
+	if (!ta) {
+		ssv_reg_write(sd, ADR_BA_CTRL, 0);
+		return;
+	}
+	ssv_reg_write(sd, ADR_BA_TA_0, get_unaligned_le32(ta));
+	ssv_reg_write(sd, ADR_BA_TA_1, get_unaligned_le16(ta + 4));
+	ssv_reg_write(sd, ADR_BA_TID, tid);
+	ssv_reg_write(sd, ADR_BA_ST_SEQ, ssn);
+	ssv_reg_write(sd, ADR_BA_SB0, 0);
+	ssv_reg_write(sd, ADR_BA_SB1, 0);
+	ssv_reg_write(sd, ADR_BA_CTRL, 0xb);
 }
