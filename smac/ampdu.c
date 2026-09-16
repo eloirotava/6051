@@ -737,12 +737,16 @@ void ssv6200_ampdu_tx_operation(u16 tid, struct ieee80211_sta *sta,
 	ssv_sta_priv = (struct ssv_sta_priv_data *)sta->drv_priv;
 	ssv_sta_priv->ampdu_tid[tid].tidno = tid;
 	ssv_sta_priv->ampdu_tid[tid].sta = sta;
-	ssv_sta_priv->ampdu_tid[tid].agg_num_max = MAX_AGGR_NUM;
-	if (buffer_size > 3) {
-		buffer_size = 3;
-	}
-	dev_info(sc->dev, "AMPDU buffer_size=%d\n", buffer_size);
-	ssv_sta_priv->ampdu_tid[tid].ssv_baw_size = SSV_AMPDU_WINDOW_SIZE;
+	/*
+	 * Honour the reorder window the peer accepted in ADDBA (the old code
+	 * clamped buffer_size to 3 for a log line and then ignored it).
+	 */
+	u16 baw = buffer_size ? min_t(u16, buffer_size, SSV_AMPDU_WINDOW_SIZE)
+			      : SSV_AMPDU_WINDOW_SIZE;
+	ssv_sta_priv->ampdu_tid[tid].agg_num_max = min_t(u16, MAX_AGGR_NUM, baw);
+	ssv_sta_priv->ampdu_tid[tid].ssv_baw_size = baw;
+	dev_info(sc->dev, "AMPDU TX tid %u: window %u, up to %u MPDUs\n",
+		 tid, baw, ssv_sta_priv->ampdu_tid[tid].agg_num_max);
 	ssv_sta_priv->ampdu_tid[tid].state = AMPDU_STATE_OPERATION;
 }
 
