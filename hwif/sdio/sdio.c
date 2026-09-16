@@ -117,6 +117,7 @@ extern int ssv_devicetype;
 extern void ssv6xxx_deinit_prepare(void);
 
 static struct ssv6xxx_platform_data wlan_data;
+static struct sdio_func *ssv_reboot_func;
 
 static int ssv6xxx_sdio_status = 0;
 u32 sdio_sr_bhvr = SUSPEND_RESUME_0;
@@ -1085,11 +1086,26 @@ ssv6xxx_sdio_probe(struct sdio_func *func, const struct sdio_device_id *id)
 		pwlan_data->device);
 	pwlan_data->ops = &sdio_ops;
 	sdio_set_drvdata(func, glue);
+	ssv_reboot_func = func;
 #ifdef CONFIG_PM
 	ssv6xxx_do_sdio_wakeup(func);
 #endif
 	ssv6xxx_sdio_power_on(pwlan_data, func);
 	ssv6xxx_sdio_read_parameter(func, glue);
+#ifdef CONFIG_PM
+	/*
+	 * After a warm reboot (or a crash) the chip may still be running the
+	 * previous firmware; uploading over it often leaves it unable to ACK.
+	 * Replay what a module reload does -- sleep command, then the wakeup
+	 * pulse -- so every probe starts from the same clean state.  On a
+	 * cold chip the sleep command is harmless and may simply fail.
+	 */
+	if (ssv6xxx_sdio_trigger_pmu(&func->dev))
+		dev_dbg(glue->dev, "sleep command before wakeup failed (cold chip?)\n");
+	msleep(50);
+	ssv6xxx_do_sdio_wakeup(func);
+	msleep(10);
+#endif
 	glue->core = platform_device_alloc(chip_family, -1);
 
 	if (!glue->core) {
@@ -1139,6 +1155,7 @@ static void ssv6xxx_sdio_remove(struct sdio_func *func)
 	dev_dbg(&func->dev, "ssv6xxx_sdio_remove enter\n");
 
 	ssv6xxx_sdio_status = 0;
+	ssv_reboot_func = NULL;
 
 	if (glue) {
 		dev_dbg(&func->dev, "ssv6xxx_sdio_remove - ssv6xxx_sdio_irq_disable\n");
@@ -1290,6 +1307,39 @@ static const struct dev_pm_ops ssv6xxx_sdio_pm_ops = {
 };
 #endif
 
+/*
+ * The vendor's RK platform glue power-cycled the chip before every load;
+ * mainline has no such hook, and a warm reboot leaves the chip running
+ * the old firmware.  The next probe then uploads over a live chip, which
+ * often comes up unable to ACK (4-way handshake times out until the
+ * module is reloaded).  Put the chip to sleep on the way down, exactly
+ * like remove() does, so the wakeup pulse in probe() boots it clean.
+ */
+#ifdef CONFIG_PM
+static int ssv6xxx_reboot_notify(struct notifier_block *nb,
+				 unsigned long event, void *unused)
+{
+	struct sdio_func *func = ssv_reboot_func;
+	struct ssv6xxx_sdio_glue *glue;
+
+	if (!func)
+		return NOTIFY_DONE;
+	glue = sdio_get_drvdata(func);
+	if (!glue || !glue->dev_ready)
+		return NOTIFY_DONE;
+
+	dev_info(&func->dev, "putting chip to sleep before %s\n",
+		 event == SYS_RESTART ? "reboot" : "shutdown");
+	ssv6xxx_sdio_irq_setmask(&glue->core->dev, 0xff);
+	ssv6xxx_sdio_trigger_pmu(&func->dev);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block ssv6xxx_reboot_nb = {
+	.notifier_call = ssv6xxx_reboot_notify,
+};
+#endif
+
 struct sdio_driver ssv6xxx_sdio_driver = {
 	.name = "ssv6051",
 	.id_table = ssv6xxx_sdio_devices,
@@ -1306,12 +1356,24 @@ EXPORT_SYMBOL(ssv6xxx_sdio_driver);
 
 int ssv6xxx_sdio_init(void)
 {
-	return sdio_register_driver(&ssv6xxx_sdio_driver);
+	int ret;
+#ifdef CONFIG_PM
+	register_reboot_notifier(&ssv6xxx_reboot_nb);
+#endif
+	ret = sdio_register_driver(&ssv6xxx_sdio_driver);
+#ifdef CONFIG_PM
+	if (ret)
+		unregister_reboot_notifier(&ssv6xxx_reboot_nb);
+#endif
+	return ret;
 }
 
 void ssv6xxx_sdio_exit(void)
 {
 	pr_info("ssv6xxx_sdio_exit\n");
+#ifdef CONFIG_PM
+	unregister_reboot_notifier(&ssv6xxx_reboot_nb);
+#endif
 	sdio_unregister_driver(&ssv6xxx_sdio_driver);
 }
 
