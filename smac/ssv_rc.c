@@ -1181,10 +1181,9 @@ static void ssv6xxx_get_rate(void *priv, struct ieee80211_sta *sta,
 #endif
 					} else {
 						{
-							BUG_ON
-							    (spinfo->txrate_idx
-							     >=
-							     rc_sta->rc_num_rate);
+							if (unlikely(spinfo->txrate_idx >=
+								     rc_sta->rc_num_rate))
+								spinfo->txrate_idx = 0;
 							rateidx =
 							    rc_sta->
 							    pinfo.rinfo
@@ -1313,7 +1312,12 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 	struct ssv_sta_rc_info *rc_sta = priv_sta;
 	int i;
 	u32 ht_supp_rates = 0;
-	BUG_ON(rc_sta->rc_valid == false);
+	/* The kernel 4.x port had replaced every sta->... here with 0, which
+	 * left rc_supp_rates empty and HT TX permanently off. */
+	const struct ieee80211_sta_ht_cap *ht_cap = &sta->deflink.ht_cap;
+	u32 legacy_rates = sta->deflink.supp_rates[sband->band];
+	if (WARN_ON_ONCE(rc_sta->rc_valid == false))
+		return;
 	dev_dbg(sc->dev, "[I] %s(): \n", __FUNCTION__);
 	rc_sta->ht_supp_rates = 0;
 	rc_sta->rc_supp_rates = 0;
@@ -1330,29 +1334,29 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		}
 	} else
 #endif
-	if (0 == true) {
+	if (ht_cap->ht_supported && (sh->cfg.hw_caps & SSV6200_HW_CAP_HT)) {
 		dev_dbg(sc->dev, "[RC init ]HT support wsid\n");
-		for (i = 0; i < SSV_HT_RATE_MAX; i++) {
-			if (((u8 *)"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")[i /
-						    MCS_GROUP_RATES] & (1 << (i
-									      %
-									      MCS_GROUP_RATES)))
+		/* 1x1 radio: only MCS 0-7 */
+		for (i = 0; i < SSV_HT_RATE_MAX && i < 8; i++) {
+			if (ht_cap->mcs.rx_mask[i / MCS_GROUP_RATES] &
+			    (1 << (i % MCS_GROUP_RATES)))
 				ht_supp_rates |= BIT(i);
 		}
 		rc_sta->ht_supp_rates = ht_supp_rates;
-		if (0 & IEEE80211_HT_CAP_GRN_FLD) {
-			rc_sta->rc_type = RC_TYPE_HT_GF;
-			rc_sta->ht_rc_type = RC_TYPE_HT_GF;
-		} else if (0 & IEEE80211_HT_CAP_SGI_20) {
+		/* Greenfield is not used: hw_cap_gf is off and GF frames are
+		 * invisible to legacy stations sharing the channel. */
+		if ((ht_cap->cap & IEEE80211_HT_CAP_SGI_20) &&
+		    (sh->cfg.hw_caps & SSV6200_HT_CAP_SGI_20)) {
 			rc_sta->rc_type = RC_TYPE_SGI_20;
 			rc_sta->ht_rc_type = RC_TYPE_HT_SGI_20;
 		} else {
 			rc_sta->rc_type = RC_TYPE_LGI_20;
 			rc_sta->ht_rc_type = RC_TYPE_HT_LGI_20;
 		}
-	} else {
-		if ((0 & (~0xfL)) == 0x0) {
-			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
+	}
+	if (!ht_supp_rates) {
+		if ((legacy_rates & (~0xfL)) == 0x0) {
+			rc_sta->rc_type = RC_TYPE_B_ONLY;
 			dev_dbg(sc->dev, "[RC init ]B only mode\n");
 		} else {
 			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
@@ -1372,7 +1376,7 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 #endif
 	if ((rc_sta->rc_type != RC_TYPE_B_ONLY)
 	    && (rc_sta->rc_type != RC_TYPE_LEGACY_GB)) {
-		if ((0)
+		if (ht_cap->ampdu_factor
 		    && (sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX)) {
 			rc_sta->is_ht = 1;
 			ssv62xx_ht_rc_caps(ssv6xxx_rc_rate_set, rc_sta);
@@ -1385,16 +1389,25 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 		    || (rc_sta->rc_type == RC_TYPE_LGI_20)
 		    || (rc_sta->rc_type == RC_TYPE_SGI_20)) {
 			if (rc_sta->rc_num_rate == 12) {
-				rc_sta->rc_supp_rates =
-				    0 & 0xfL;
+				rc_sta->rc_supp_rates = legacy_rates & 0xfL;
 				rc_sta->rc_supp_rates |= (ht_supp_rates << 4);
 			} else
 				rc_sta->rc_supp_rates = ht_supp_rates;
-		} else if (rc_sta->rc_type == RC_TYPE_LEGACY_GB)
+		} else if (rc_sta->rc_type == RC_TYPE_LEGACY_GB) {
+			/*
+			 * rc_supp_rates is indexed like ssv6xxx_rc_rate_set
+			 * (sorted by rate: 1 2 5.5 6 9 11 12 ... 54), while
+			 * mac80211 indexes supp_rates like the sband
+			 * (1 2 5.5 11 6 9 12 ... 54).
+			 */
+			static const u8 gb_to_sband[12] = {
+				0, 1, 2, 4, 5, 3, 6, 7, 8, 9, 10, 11 };
 			rc_sta->rc_supp_rates = 0;
-		else if (rc_sta->rc_type == RC_TYPE_B_ONLY)
-			rc_sta->rc_supp_rates =
-			    0 & 0xfL;
+			for (i = 0; i < 12; i++)
+				if (legacy_rates & BIT(gb_to_sband[i]))
+					rc_sta->rc_supp_rates |= BIT(i);
+		} else if (rc_sta->rc_type == RC_TYPE_B_ONLY)
+			rc_sta->rc_supp_rates = legacy_rates & 0xfL;
 		ssv62xx_rc_caps(rc_sta);
 	}
 }
