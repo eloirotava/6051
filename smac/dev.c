@@ -17,6 +17,7 @@
 #include <linux/nl80211.h>
 #include <linux/etherdevice.h>
 #include <linux/if_ether.h>
+#include <linux/moduleparam.h>
 #include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/version.h>
@@ -45,11 +46,16 @@ struct rssi_res_st rssi_res, *p_rssi_res;
 #endif
 
 /*
- * The 6051 firmware/hardware crypto path corrupts CCMP frames on modern
- * mac80211 (observed as an immediate MIC_FAILURE after the 4-way handshake).
- * Let mac80211 handle WPA keys until that path is made reliable.
+ * The 6051 hardware crypto path looked broken on modern mac80211 (an
+ * immediate MIC_FAILURE after the 4-way handshake).  That was the RX flag
+ * bug (RX_ENC_FLAG_SHORTPRE landing in rxs->flag as RX_FLAG_MMIC_ERROR
+ * while the IV was stripped by the chip), since fixed in ssv_rc.c.
+ * Software crypto (mac80211) stays the default; hw_crypto=1 hands WPA
+ * keys to the chip again.
  */
-#define SSV6XXX_FORCE_SW_CRYPTO 1
+static bool hw_crypto;
+module_param(hw_crypto, bool, 0444);
+MODULE_PARM_DESC(hw_crypto, "Use the chip for WPA encryption/decryption (default: software)");
 #define MAX_TX_Q_LEN (64)
 #define LOW_TX_Q_LEN (MAX_TX_Q_LEN/2)
 static u16 bits_per_symbol[][2] = {
@@ -1126,17 +1132,25 @@ static int _set_pairwise_key_tkip_ccmp(struct ssv_softc *sc,
 	}
 	if (tkip_use_sw_cipher == true)
 		dev_info(sc->dev, "Using software TKIP cipher\n");
-	if (!SSV6XXX_FORCE_SW_CRYPTO &&
+	if (hw_crypto &&
 	    (((vif_priv->vif_idx == 0) && (tdls_use_sw_cipher == false) &&
 	      (tkip_use_sw_cipher == false)) ||
 	     ((cipher == SSV_CIPHER_CCMP) &&
 	      (sc->sh->cfg.use_wpa2_only == 1)))) {
 		sta_priv->has_hw_decrypt = true;
 		sta_priv->need_sw_decrypt = false;
+		/*
+		 * AMPDUs are built on the host and the chip cannot encrypt
+		 * them, so an HT peer gets HW decryption only and mac80211
+		 * encrypts.  The kernel 4.x port had replaced the ht_supported
+		 * test with (0 == false), which broke all TX with hw_crypto.
+		 */
+		struct ieee80211_sta *peer = sta_priv->sta_info ?
+					     sta_priv->sta_info->sta : NULL;
+		bool peer_ht = peer && peer->deflink.ht_cap.ht_supported;
 		if ((cipher == SSV_CIPHER_TKIP)
 		    || ((!(sc->sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX) ||
-			 (0 ==
-			  false))
+			 !peer_ht)
 			&& (vif_priv->force_sw_encrypt == false))) {
 			dev_dbg(sc->dev,
 				"STA %d uses HW encrypter for pairwise.\n",
@@ -1194,7 +1208,7 @@ static int _set_group_key_tkip_ccmp(struct ssv_softc *sc,
 	if ((cipher == SSV_CIPHER_TKIP) && (sc->sh->cfg.use_wpa2_only == 1)) {
 		tkip_use_sw_cipher = true;
 	}
-	if (!SSV6XXX_FORCE_SW_CRYPTO &&
+	if (hw_crypto &&
 	    (((vif_priv->vif_idx == 0) && (tkip_use_sw_cipher == false)) ||
 	     ((cipher == SSV_CIPHER_CCMP) &&
 	      (sc->sh->cfg.use_wpa2_only == 1)))) {
