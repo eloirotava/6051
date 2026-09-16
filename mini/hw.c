@@ -488,7 +488,9 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	ssv_reg_write(sd, ADR_RX_FLOW_DATA, M_ENG_MACRX | (M_ENG_ENCRYPT_SEC << 4) |
 		      (M_ENG_HWHCI << 8));
 	ssv_reg_write(sd, ADR_RX_FLOW_MNG, M_ENG_MACRX | (M_ENG_HWHCI << 4));
-	ssv_reg_write(sd, ADR_RX_FLOW_CTRL, M_ENG_MACRX | (M_ENG_HWHCI << 4));
+	/* control frames (Block Ack) pass the MCU, which tracks aggregates */
+	ssv_reg_write(sd, ADR_RX_FLOW_CTRL, M_ENG_MACRX | (M_ENG_CPU << 4) |
+		      (M_ENG_HWHCI << 8));
 	ssv_reg_set_bits(sd, ADR_SCRT_SET, 1 << SCRT_RPLY_IGNORE_SFT,
 			 ~SCRT_RPLY_IGNORE_I_MSK);
 
@@ -508,6 +510,9 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	ssv_reg_read(sd, ADR_TX_SEG, &val);
 	dev_info(sd->dev, "firmware running (version %u)\n", val);
 	ssv_reg_set_bits(sd, ADR_PHY_EN_1, RG_PHY_MD_EN_MSK, RG_PHY_MD_EN_MSK);
+	/* the MAC computes the FCS of each MPDU inside an aggregate */
+	ssv_reg_set_bits(sd, ADR_MTX_MISC_EN, BIT(MTX_AMPDU_CRC_AUTO_SFT),
+			 BIT(MTX_AMPDU_CRC_AUTO_SFT));
 	return ssv_send_cmd(sd, SSV_CMD_WATCHDOG_START, NULL, 0);
 }
 

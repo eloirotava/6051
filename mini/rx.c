@@ -66,12 +66,16 @@ static void ssv_rx_event(struct ssv_dev *sd, struct sk_buff *skb)
 		sd->cali_state = ev->seq_no == 0 ? 1 : -1;
 		wake_up(&sd->cali_wait);
 		break;
+	case SSV_EVT_NO_BA:
+		ssv_agg_no_ba(sd, ev->data, skb->len - sizeof(*ev));
+		break;
 	case SSV_EVT_RC_MPDU_REPORT:
 		if (skb->len >= sizeof(*ev) + sizeof(struct ssv_rc_report))
 			ssv_rc_report(sd, (struct ssv_rc_report *)ev->data);
 		break;
 	default:
 		/* watchdog ticks, AMPDU/BA notifications, logs */
+		dev_dbg(sd->dev, "event %u len %u\n", ev->h_event, skb->len);
 		break;
 	}
 	dev_kfree_skb(skb);
@@ -128,9 +132,14 @@ static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 		rxs->flag |= RX_FLAG_NO_SIGNAL_VAL;
 
 	skb_pull(skb, SSV_RX_DESC_LEN);
-	skb_trim(skb, skb->len - RX_PINFO_PAD);
-
 	hdr = (struct ieee80211_hdr *)skb->data;
+	/* Block Acks for our aggregates end with the firmware's note */
+	if (ieee80211_is_back(hdr->frame_control)) {
+		ssv_agg_ba(sd, skb);
+		dev_kfree_skb(skb);
+		return;
+	}
+	skb_trim(skb, skb->len - RX_PINFO_PAD);
 	/* the chip clock is not the TSF; keep mac80211's beacon timing sane */
 	if (ieee80211_is_beacon(hdr->frame_control) ||
 	    ieee80211_is_probe_resp(hdr->frame_control)) {

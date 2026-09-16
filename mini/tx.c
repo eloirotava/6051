@@ -37,7 +37,7 @@ static const u8 ac_to_hwq[IEEE80211_NUM_ACS] = { 3, 2, 1, 0 };
 
 static const u16 ht_bits_per_symbol[8] = { 26, 52, 78, 104, 156, 208, 234, 260 };
 
-static u32 legacy_airtime(const struct ssv_rate *r, u32 len, bool short_pre)
+u32 ssv_legacy_airtime(const struct ssv_rate *r, u32 len, bool short_pre)
 {
 	u32 bits = len * 8;
 
@@ -53,7 +53,7 @@ static u32 legacy_airtime(const struct ssv_rate *r, u32 len, bool short_pre)
 	       OFDM_SYMBOL;
 }
 
-static u32 ht_airtime(u8 mcs, u32 len, bool sgi)
+u32 ssv_ht_airtime(u8 mcs, u32 len, bool sgi)
 {
 	u32 nsym = DIV_ROUND_UP(len * 8 + OFDM_PLCP_BITS, ht_bits_per_symbol[mcs & 7]);
 	u32 t = sgi ? DIV_ROUND_UP((nsym * 18 + 4) / 5, 4) << 2 : nsym << 2;
@@ -74,15 +74,15 @@ static u32 ssv_set_timing(struct ssv_dev *sd, struct ssv_tx_desc *d,
 	u32 frame, ack = 0, nav = 0, consume = 0;
 
 	if (r->phy == SSV_PHY_HT)
-		frame = ht_airtime(r->dot11, len, drate >= SSV_RATE_MCS_SGI);
+		frame = ssv_ht_airtime(r->dot11, len, drate >= SSV_RATE_MCS_SGI);
 	else
-		frame = legacy_airtime(r, len, short_pre);
+		frame = ssv_legacy_airtime(r, len, short_pre);
 
 	if (d->unicast)
-		ack = legacy_airtime(c, ACK_LEN, short_pre);
+		ack = ssv_legacy_airtime(c, ACK_LEN, short_pre);
 	if (rts) {
-		nav = frame + ack + legacy_airtime(c, CTS_LEN, short_pre);
-		consume = nav + legacy_airtime(c, RTS_LEN, short_pre);
+		nav = frame + ack + ssv_legacy_airtime(c, CTS_LEN, short_pre);
+		consume = nav + ssv_legacy_airtime(c, RTS_LEN, short_pre);
 	}
 
 	d->rts_cts_nav = nav;
@@ -236,36 +236,68 @@ static int ssv_refresh_resources(struct ssv_dev *sd)
 	return 0;
 }
 
-static int ssv_pages(struct sk_buff *skb)
+static int ssv_len_pages(size_t len)
 {
-	return DIV_ROUND_UP(skb->len + TX_ALLOC_RSVD, 1 << HW_PAGE_SHIFT);
+	return DIV_ROUND_UP(len + TX_ALLOC_RSVD, 1 << HW_PAGE_SHIFT);
+}
+
+static bool ssv_can_send_len(struct ssv_dev *sd, int hwq, size_t len)
+{
+	return sd->res_valid && sd->free_pages >= ssv_len_pages(len) &&
+	       sd->free_ids > 0 && sd->free_frames[hwq] > 0;
 }
 
 static bool ssv_can_send(struct ssv_dev *sd, int hwq, struct sk_buff *skb)
 {
-	return sd->res_valid && sd->free_pages >= ssv_pages(skb) &&
-	       sd->free_ids > 0 && sd->free_frames[hwq] > 0;
+	return ssv_can_send_len(sd, hwq, skb->len);
+}
+
+/* Is there chip room for up to @len bytes on @hwq?  Refreshes once. */
+bool ssv_tx_budget(struct ssv_dev *sd, int hwq, size_t len)
+{
+	if (ssv_can_send_len(sd, hwq, len))
+		return true;
+	ssv_refresh_resources(sd);
+	return ssv_can_send_len(sd, hwq, len);
+}
+
+/* Write @len bytes prepared in sd->tx_buf and charge the chip budget. */
+int ssv_tx_write(struct ssv_dev *sd, int hwq, size_t len)
+{
+	size_t aligned = sdio_align_size(sd->func, len);
+	int ret;
+
+	sd->free_pages -= ssv_len_pages(len);
+	sd->free_ids--;
+	sd->free_frames[hwq]--;
+	memset(sd->tx_buf + len, 0, aligned - len);
+	ret = ssv_write_data(sd, sd->tx_buf, len);
+	if (ret)
+		sd->res_valid = false;
+	return ret;
 }
 
 static void ssv_send_one(struct ssv_dev *sd, int hwq, struct sk_buff *skb)
 {
-	size_t aligned = sdio_align_size(sd->func, skb->len);
 	int ret;
-
-	sd->free_pages -= ssv_pages(skb);
-	sd->free_ids--;
-	sd->free_frames[hwq]--;
 
 	/* bounce: word-aligned, DMA-safe and zero-padded to the block size */
 	memcpy(sd->tx_buf, skb->data, skb->len);
-	memset(sd->tx_buf + skb->len, 0, aligned - skb->len);
-	ret = ssv_write_data(sd, sd->tx_buf, skb->len);
-	if (ret)
-		sd->res_valid = false;
+	ret = ssv_tx_write(sd, hwq, skb->len);
 	ssv_tx_complete(sd, skb, !ret);
 }
 
-static unsigned int ssv_queued(struct ssv_dev *sd)
+int ssv_tid_to_hwq(u8 tid)
+{
+	static const u8 tid_to_ac[8] = {
+		IEEE80211_AC_BE, IEEE80211_AC_BK, IEEE80211_AC_BK, IEEE80211_AC_BE,
+		IEEE80211_AC_VI, IEEE80211_AC_VI, IEEE80211_AC_VO, IEEE80211_AC_VO,
+	};
+
+	return ac_to_hwq[tid_to_ac[tid & 7]];
+}
+
+static unsigned int ssv_queued_hw(struct ssv_dev *sd)
 {
 	unsigned int n = 0;
 	int q;
@@ -273,6 +305,19 @@ static unsigned int ssv_queued(struct ssv_dev *sd)
 	for (q = 0; q < HW_TXQ_NUM; q++)
 		n += skb_queue_len(&sd->txq[q]);
 	return n;
+}
+
+/* everything not yet handed to the chip, for flow control */
+static unsigned int ssv_queued(struct ssv_dev *sd)
+{
+	return ssv_queued_hw(sd) + atomic_read(&sd->agg_queued);
+}
+
+/* an aggregation queue has work (new frames, or a Block Ack came in) */
+void ssv_tx_kick(struct ssv_dev *sd)
+{
+	WRITE_ONCE(sd->agg_kick, true);
+	wake_up(&sd->tx_wait);
 }
 
 static int ssv_tx_thread(void *data)
@@ -283,10 +328,17 @@ static int ssv_tx_thread(void *data)
 		bool sent = false, blocked = false;
 		int q;
 
-		wait_event_interruptible(sd->tx_wait,
-					 ssv_queued(sd) || kthread_should_stop());
+		/* aggregates waiting for a Block Ack need a periodic look */
+		wait_event_interruptible_timeout(sd->tx_wait,
+						 ssv_queued_hw(sd) || READ_ONCE(sd->agg_kick) ||
+						 kthread_should_stop(),
+						 msecs_to_jiffies(50));
 		if (kthread_should_stop())
 			break;
+		WRITE_ONCE(sd->agg_kick, false);
+
+		if (ssv_agg_pump(sd, &blocked))
+			sent = true;
 
 		/* management first, then VO, VI, BE, BK */
 		for (q = HW_TXQ_NUM - 1; q >= 0; q--) {
@@ -328,6 +380,7 @@ void ssv_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 	    struct sk_buff *skb)
 {
 	struct ssv_dev *sd = hw->priv;
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	__le16 fc = hdr->frame_control;
 	int hwq;
@@ -344,17 +397,22 @@ void ssv_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 	else
 		hwq = ac_to_hwq[skb_get_queue_mapping(skb) & 3];
 
-	if (!ssv_build_desc(sd, skb, hwq)) {
-		ieee80211_free_txskb(hw, skb);
-		return;
+	if (control && control->sta && ssv_agg_tx(sd, control->sta, skb)) {
+		ssv_tx_kick(sd);
+	} else {
+		info->flags &= ~IEEE80211_TX_CTL_AMPDU;
+		if (!ssv_build_desc(sd, skb, hwq)) {
+			ieee80211_free_txskb(hw, skb);
+			return;
+		}
+		skb_queue_tail(&sd->txq[hwq], skb);
+		wake_up(&sd->tx_wait);
 	}
-	skb_queue_tail(&sd->txq[hwq], skb);
 
 	if (!sd->queues_stopped && ssv_queued(sd) >= TXQ_STOP_LEN) {
 		sd->queues_stopped = true;
 		ieee80211_stop_queues(hw);
 	}
-	wake_up(&sd->tx_wait);
 }
 
 void ssv_tx_flush(struct ssv_dev *sd)
@@ -374,7 +432,8 @@ int ssv_tx_init(struct ssv_dev *sd)
 	for (q = 0; q < HW_TXQ_NUM; q++)
 		skb_queue_head_init(&sd->txq[q]);
 	init_waitqueue_head(&sd->tx_wait);
-	sd->tx_buf = devm_kmalloc(sd->dev, SSV_MAX_FRAME + SDIO_BLOCK_SIZE, GFP_KERNEL);
+	atomic_set(&sd->agg_queued, 0);
+	sd->tx_buf = devm_kmalloc(sd->dev, SSV_TX_BUF_SIZE + SDIO_BLOCK_SIZE, GFP_KERNEL);
 	if (!sd->tx_buf)
 		return -ENOMEM;
 	sd->res_valid = false;

@@ -135,6 +135,7 @@ static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		return -ENOSPC;
 	}
 	ss->wsid = wsid;
+	ssv_agg_init(ss);
 	spin_lock_bh(&sd->sta_lock);
 	ssv_rc_init(sd, sta);
 	spin_unlock_bh(&sd->sta_lock);
@@ -149,6 +150,7 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 {
 	struct ssv_dev *sd = hw->priv;
 	struct ssv_sta *ss = (struct ssv_sta *)sta->drv_priv;
+	int tid;
 
 	mutex_lock(&sd->mutex);
 	if (sd->rx_ba_sta == sta) {
@@ -163,6 +165,8 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	ss->wsid = -1;
 	mutex_unlock(&sd->mutex);
 	synchronize_rcu();
+	for (tid = 0; tid < SSV_AGG_TIDS; tid++)
+		ssv_agg_flush(sd, ss, tid);
 	return 0;
 }
 
@@ -224,7 +228,7 @@ static int ssv_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		}
 		break;
 	default:
-		ret = -EOPNOTSUPP;
+		ret = ssv_agg_action(sd, vif, params);
 	}
 	mutex_unlock(&sd->mutex);
 	return ret;

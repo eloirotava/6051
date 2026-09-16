@@ -189,3 +189,52 @@ void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 out:
 	rcu_read_unlock();
 }
+
+/*
+ * Rate chain for an aggregate: the current rate and two below it (the
+ * chip falls back along the chain).  Every RC_PROBE_EVERY-th aggregate
+ * starts one step up or down instead.  Only for HT peers.
+ */
+bool ssv_rc_agg_chain(struct ssv_dev *sd, struct ssv_sta *ss, u8 *chain)
+{
+	struct ssv_rc *rc = &ss->rc;
+	int top, i;
+
+	if (!rc->n || rc->rate[0] < SSV_RATE_MCS_LGI)
+		return false;
+	rc->agg_count++;
+	top = rc->cur;
+	if (rc->agg_count % RC_PROBE_EVERY == 0) {
+		if ((rc->agg_count / RC_PROBE_EVERY) & 1)
+			top = min_t(int, top + 1, rc->n - 1);
+		else
+			top = max_t(int, top - 1, 0);
+	}
+	for (i = 0; i < SSV_TX_MAX_RATES; i++)
+		chain[i] = rc->rate[max_t(int, top - i, 0)];
+	return true;
+}
+
+/*
+ * Aggregate outcome: @acked of @frames MPDUs got through; @tries is the
+ * number of attempts the chip made at the first rate.
+ */
+void ssv_rc_agg_result(struct ssv_dev *sd, struct ssv_sta *ss, u8 rate,
+		       int frames, int acked, int tries)
+{
+	struct ssv_rc *rc = &ss->rc;
+	u32 p;
+	int i;
+
+	if (!frames)
+		return;
+	for (i = 0; i < rc->n; i++) {
+		if (rc->rate[i] != rate)
+			continue;
+		p = min(acked, frames) * RC_SCALE / (frames * max(tries, 1));
+		rc->prob[i] = rc->sampled[i] ? (rc->prob[i] * 3 + p) / 4 : p;
+		rc->sampled[i] = true;
+		ssv_rc_select(rc);
+		break;
+	}
+}

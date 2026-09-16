@@ -42,6 +42,7 @@
 #define SDIO_OUTPUT_TIMING	3
 #define SDIO_CLOCK_FW		25000000
 #define SSV_MAX_FRAME		4096
+#define SSV_TX_BUF_SIZE		16384
 
 /* INT_STATUS / INT_MASK bits */
 #define SSV_INT_RX		BIT(0)
@@ -100,6 +101,7 @@ enum ssv_cmd_id {
 };
 
 enum ssv_event {
+	SSV_EVT_NO_BA = 1,
 	SSV_EVT_RC_MPDU_REPORT = 2,
 	SSV_EVT_RC_AMPDU_REPORT = 3,
 	SSV_EVT_TXLOOPBK_RESULT = 10,
@@ -352,11 +354,37 @@ struct ssv_rc {
 	u8 win_idx;		/* rate index used by the current window */
 	u8 win_left;
 	u32 windows;
+	u32 agg_count;
+};
+
+#define SSV_AGG_TIDS		8
+#define SSV_AGG_WINDOW		64
+
+enum ssv_agg_state {
+	SSV_AGG_OFF,
+	SSV_AGG_STARTING,
+	SSV_AGG_OPERATIONAL,
+};
+
+/* TX aggregation state of one TID (protected by ssv_dev.sta_lock) */
+struct ssv_agg {
+	u8 state;
+	bool waiting;		/* an aggregate is in the air */
+	u16 buf_size;
+	u8 rate;		/* first rate of the aggregate in flight */
+	u8 sent_frames;
+	unsigned long sent_at;
+	unsigned long retry_start;
+	struct sk_buff_head q;
+	struct sk_buff_head retry;
+	struct sk_buff_head inflight;
+	u8 tries[SSV_AGG_WINDOW];
 };
 
 struct ssv_sta {
 	int wsid;
 	struct ssv_rc rc;
+	struct ssv_agg agg[SSV_AGG_TIDS];
 };
 
 struct ssv_dev {
@@ -397,6 +425,9 @@ struct ssv_dev {
 	int free_frames[HW_TXQ_NUM];
 	bool res_valid;
 	bool queues_stopped;
+	/* frames held in aggregation queues, and a TX thread poke for them */
+	atomic_t agg_queued;
+	bool agg_kick;
 
 	/* calibration handshake */
 	wait_queue_head_t cali_wait;
@@ -450,6 +481,11 @@ void ssv_scan_cca(struct ssv_dev *sd, bool scanning);
 void ssv_rx_ba_session(struct ssv_dev *sd, const u8 *ta, u16 tid, u16 ssn);
 
 /* tx.c */
+u32 ssv_legacy_airtime(const struct ssv_rate *r, u32 len, bool short_pre);
+u32 ssv_ht_airtime(u8 mcs, u32 len, bool sgi);
+int ssv_tid_to_hwq(u8 tid);
+bool ssv_tx_budget(struct ssv_dev *sd, int hwq, size_t len);
+int ssv_tx_write(struct ssv_dev *sd, int hwq, size_t len);
 int ssv_tx_init(struct ssv_dev *sd);
 void ssv_tx_deinit(struct ssv_dev *sd);
 void ssv_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
@@ -459,7 +495,21 @@ void ssv_tx_flush(struct ssv_dev *sd);
 /* rx.c */
 void ssv_rx_irq(struct ssv_dev *sd);
 
+/* ampdu.c */
+void ssv_agg_init(struct ssv_sta *ss);
+void ssv_tx_kick(struct ssv_dev *sd);
+void ssv_agg_flush(struct ssv_dev *sd, struct ssv_sta *ss, u8 tid);
+bool ssv_agg_tx(struct ssv_dev *sd, struct ieee80211_sta *sta, struct sk_buff *skb);
+bool ssv_agg_pump(struct ssv_dev *sd, bool *blocked);
+void ssv_agg_ba(struct ssv_dev *sd, struct sk_buff *skb);
+void ssv_agg_no_ba(struct ssv_dev *sd, const u8 *data, size_t len);
+int ssv_agg_action(struct ssv_dev *sd, struct ieee80211_vif *vif,
+		   struct ieee80211_ampdu_params *params);
+
 /* rc.c */
+bool ssv_rc_agg_chain(struct ssv_dev *sd, struct ssv_sta *ss, u8 *chain);
+void ssv_rc_agg_result(struct ssv_dev *sd, struct ssv_sta *ss, u8 rate,
+		       int frames, int acked, int tries);
 void ssv_rc_init(struct ssv_dev *sd, struct ieee80211_sta *sta);
 u8 ssv_rc_get(struct ssv_dev *sd, struct ssv_sta *ss, bool *report);
 void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt);
