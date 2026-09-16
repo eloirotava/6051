@@ -844,6 +844,20 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 		}
 		if (_do_tx(hctl, status)) {
 			dbg_isr_miss = false;
+		} else if ((status & SSV6XXX_INT_RESOURCE_LOW) &&
+			   !(status & SSV6XXX_INT_RX) &&
+			   (hctl->int_mask & SSV6XXX_INT_RESOURCE_LOW)) {
+			/*
+			 * Frames are queued but the chip had no free page/ID,
+			 * and RESOURCE_LOW stays asserted.  Looping straight
+			 * back re-reads the TX resource register thousands of
+			 * times per second (one CMD52 + two CMD53 each) and
+			 * starves the bus.  Give the air a moment to drain the
+			 * chip queue.  This runs from the SDIO IRQ work with the
+			 * host released, so sleeping is fine; pending RX is
+			 * served first on the next pass.
+			 */
+			usleep_range(500, 1000);
 		}
 		ctrl_hci->isr_running = 0;
 #ifdef CONFIG_SSV6XXX_DEBUGFS
