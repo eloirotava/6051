@@ -56,6 +56,10 @@ struct ssv6xxx_hci_ctrl {
 	struct workqueue_struct *hci_work_queue;
 	struct work_struct hci_rx_work;
 	struct work_struct hci_tx_work;
+	/* INT_STATUS read by _do_rx() after its last frame, if it ended the
+	 * loop because no RX was pending: lets the ISR skip a re-read. */
+	u32 rx_last_status;
+	bool rx_last_status_valid;
 	u32 read_rs0_info_fail;
 	u32 read_rs1_info_fail;
 	u32 rx_work_running;

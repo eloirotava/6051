@@ -436,6 +436,7 @@ static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 #if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	skb_queue_head_init(&rx_list);
 #endif
+	hctl->rx_last_status_valid = false;
 	for (rx_cnt = 0; (status & SSV6XXX_INT_RX) && (rx_cnt < 32); rx_cnt++) {
 #ifdef CONFIG_SSV6XXX_DEBUGFS
 		if (hctl->isr_mib_enable)
@@ -473,7 +474,13 @@ static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 #else
 		hctl->shi->hci_rx_cb(rx_mpdu, hctl->shi->rx_cb_args);
 #endif
-		HCI_IRQ_STATUS(hctl, &status);
+		if (HCI_IRQ_STATUS(hctl, &status) < 0) {
+			status = 0;
+			hctl->rx_last_status_valid = false;
+		} else if (!(status & SSV6XXX_INT_RX)) {
+			hctl->rx_last_status = status;
+			hctl->rx_last_status_valid = true;
+		}
 #ifdef CONFIG_SSV6XXX_DEBUGFS
 		if (hctl->isr_mib_enable) {
 			getnstimeofday(&rx_proc_end_time);
@@ -795,6 +802,7 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 			    (jiffies - ctrl_hci->prev_isr_jiffes);
 		}
 	}
+	bool have_status = false;
 	BUG_ON(!args);
 	do {
 #ifdef CONFIG_SSV6XXX_DEBUGFS
@@ -819,7 +827,13 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 			spin_unlock_irqrestore(&hctl->int_lock, flags);
 			HCI_IRQ_SET_MASK(hctl, regval);
 		}
-		ret = HCI_IRQ_STATUS(hctl, &status);
+		if (have_status) {
+			/* fresh value from the end of _do_rx() */
+			have_status = false;
+			ret = 0;
+		} else {
+			ret = HCI_IRQ_STATUS(hctl, &status);
+		}
 		if ((ret < 0) || ((status & hctl->int_mask) == 0)) {
 #ifdef CONFIG_IRQ_DEBUG_COUNT
 			if (ctrl_hci->irq_enable)
@@ -834,6 +848,7 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 		spin_unlock_irqrestore(&hctl->int_lock, flags);
 		mutex_unlock(&hctl->hci_mutex);
 		ctrl_hci->isr_running = 1;
+		hctl->rx_last_status_valid = false;
 		if (status & SSV6XXX_INT_RX) {
 			ret = _isr_do_rx(hctl, status);
 			if (ret < 0) {
@@ -844,6 +859,11 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 		}
 		if (_do_tx(hctl, status)) {
 			dbg_isr_miss = false;
+		} else if (hctl->rx_last_status_valid) {
+			/* RX drained and TX touched nothing: the status read
+			 * at the end of the RX loop is still current. */
+			status = hctl->rx_last_status;
+			have_status = true;
 		} else if ((status & SSV6XXX_INT_RESOURCE_LOW) &&
 			   !(status & SSV6XXX_INT_RX) &&
 			   (hctl->int_mask & SSV6XXX_INT_RESOURCE_LOW)) {
