@@ -140,7 +140,9 @@ static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	ssv_rc_init(sd, sta);
 	spin_unlock_bh(&sd->sta_lock);
 	ssv_wsid_add(sd, wsid, sta->addr);
+	mutex_lock(&sd->agg_mutex);
 	rcu_assign_pointer(sd->sta[wsid], sta);
+	mutex_unlock(&sd->agg_mutex);
 	mutex_unlock(&sd->mutex);
 	return 0;
 }
@@ -159,7 +161,9 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	}
 	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_HW_STA &&
 	    rcu_access_pointer(sd->sta[ss->wsid]) == sta) {
+		mutex_lock(&sd->agg_mutex);
 		RCU_INIT_POINTER(sd->sta[ss->wsid], NULL);
+		mutex_unlock(&sd->agg_mutex);
 		ssv_wsid_del(sd, ss->wsid);
 	}
 	ss->wsid = -1;
@@ -275,6 +279,7 @@ struct ssv_dev *ssv_mac_alloc(struct device *dev)
 	sd->hw = hw;
 	sd->dev = dev;
 	mutex_init(&sd->mutex);
+	mutex_init(&sd->agg_mutex);
 	spin_lock_init(&sd->sta_lock);
 	init_waitqueue_head(&sd->cali_wait);
 	SET_IEEE80211_DEV(hw, dev);
@@ -309,7 +314,10 @@ int ssv_mac_register(struct ssv_dev *sd)
 	sd->band.n_channels = ARRAY_SIZE(ssv_channels);
 	sd->band.bitrates = ssv_bitrates;
 	sd->band.n_bitrates = ARRAY_SIZE(ssv_bitrates);
-	/* 1x1, 20 MHz only */
+	/*
+	 * 1x1, 20 MHz only.  The datasheet lists RX STBC, but with it the AP
+	 * sends STBC and downstream throughput drops by about a third.
+	 */
 	ht->ht_supported = true;
 	ht->cap = IEEE80211_HT_CAP_SGI_20 | IEEE80211_HT_CAP_SM_PS;
 	ht->ampdu_factor = IEEE80211_HT_MAX_AMPDU_32K;

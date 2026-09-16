@@ -369,15 +369,12 @@ enum ssv_agg_state {
 /* TX aggregation state of one TID (protected by ssv_dev.sta_lock) */
 struct ssv_agg {
 	u8 state;
-	bool waiting;		/* an aggregate is in the air */
+	u8 next_id;		/* tags the MPDUs of each aggregate */
 	u16 buf_size;
-	u8 rate;		/* first rate of the aggregate in flight */
-	u8 sent_frames;
-	unsigned long sent_at;
 	unsigned long retry_start;
 	struct sk_buff_head q;
-	struct sk_buff_head retry;
-	struct sk_buff_head inflight;
+	struct sk_buff_head retry;	/* sorted by sequence number */
+	struct sk_buff_head inflight;	/* in send order */
 	u8 tries[SSV_AGG_WINDOW];
 };
 
@@ -435,6 +432,7 @@ struct ssv_dev {
 
 	/* association */
 	struct mutex mutex;
+	struct mutex agg_mutex;	/* TX thread vs. station removal */
 	spinlock_t sta_lock;
 	struct ieee80211_vif *vif;
 	struct ieee80211_sta __rcu *sta[SSV_NUM_HW_STA];

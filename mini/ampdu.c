@@ -9,7 +9,10 @@
  * carried, or a NO_BA event when nothing came back.  MPDUs missing from
  * the bitmap are resent in the next aggregate, up to AGG_MAX_TRIES.
  *
- * One aggregate per TID is in flight at a time.
+ * Several aggregates of a TID can be in flight, all inside the peer's
+ * window starting at the oldest unfinished MPDU.  The note lists the
+ * sequence numbers the chip put in the aggregate, which ties each Block Ack
+ * to its MPDUs.
  */
 #include <linux/etherdevice.h>
 #include <linux/ieee80211.h>
@@ -19,13 +22,22 @@
 
 #define AGG_MAX_TRIES		4
 #define AGG_MAX_FRAMES		16
-#define AGG_BA_TIMEOUT		msecs_to_jiffies(100)
+#define AGG_MAX_INFLIGHT	3
+#define AGG_BA_TIMEOUT		msecs_to_jiffies(200)
 #define AGG_DELIM_LEN		4
 #define AGG_FCS_LEN		4
 #define AGG_SIGNATURE		0x4e
 #define AGG_MPDU_NAV		48
 #define AGG_MAX_BYTES		(((HW_TX_PAGES / 2) << HW_PAGE_SHIFT) - TX_ALLOC_RSVD)
 #define BA_LEN			32
+#define SEQ_MASK		0xfff
+
+/* per-MPDU state while the driver owns it, in the tx_info status area */
+struct ssv_agg_cb {
+	u32 sent_at;
+	u8 rate;
+	u8 id;
+} __packed;
 
 /* Longest aggregate per HT rate (15..30), from the vendor driver */
 static const u16 agg_max_len[16] = {
@@ -55,6 +67,21 @@ static u16 skb_seq(struct sk_buff *skb)
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 
 	return le16_to_cpu(hdr->seq_ctrl) >> 4;
+}
+
+static struct ssv_agg_cb *agg_cb(struct sk_buff *skb)
+{
+	BUILD_BUG_ON(sizeof(struct ssv_agg_cb) >
+		     sizeof(IEEE80211_SKB_CB(skb)->status.status_driver_data));
+	return (struct ssv_agg_cb *)IEEE80211_SKB_CB(skb)->status.status_driver_data;
+}
+
+/* true if sequence number @a comes before @b */
+static bool seq_before(u16 a, u16 b)
+{
+	u16 d = (b - a) & SEQ_MASK;
+
+	return d && d < 2048;
 }
 
 static u8 skb_tid(struct sk_buff *skb)
@@ -114,27 +141,70 @@ static void agg_done(struct ssv_dev *sd, struct sk_buff *skb, bool acked)
 	ieee80211_tx_status_ni(sd->hw, skb);
 }
 
-/* Move unacknowledged MPDUs back for resending; give up after AGG_MAX_TRIES. */
-static void agg_requeue_all(struct ssv_agg *a, struct sk_buff_head *dropped)
+/* Queue an unacknowledged MPDU for resending; give up after AGG_MAX_TRIES. */
+static bool agg_retry(struct ssv_agg *a, struct sk_buff *skb,
+		      struct sk_buff_head *dropped)
+{
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	u16 seq = skb_seq(skb);
+	u8 *tries = &a->tries[seq & (SSV_AGG_WINDOW - 1)];
+	struct sk_buff *pos;
+
+	if (++*tries >= AGG_MAX_TRIES) {
+		*tries = 0;
+		__skb_queue_tail(dropped, skb);
+		return true;
+	}
+	hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_RETRY);
+	skb_queue_walk(&a->retry, pos) {
+		if (seq_before(seq, skb_seq(pos))) {
+			__skb_queue_before(&a->retry, pos, skb);
+			return false;
+		}
+	}
+	__skb_queue_tail(&a->retry, skb);
+	return false;
+}
+
+static void agg_acked(struct ssv_agg *a, struct sk_buff *skb,
+		      struct sk_buff_head *done)
+{
+	a->tries[skb_seq(skb) & (SSV_AGG_WINDOW - 1)] = 0;
+	__skb_queue_tail(done, skb);
+}
+
+/* Oldest MPDU not finished yet: the start of the window we may use. */
+static bool agg_window_start(struct ssv_agg *a, u16 *start)
 {
 	struct sk_buff *skb;
-	struct sk_buff_head keep;
+	bool found = false;
 
-	__skb_queue_head_init(&keep);
-	while ((skb = __skb_dequeue(&a->inflight))) {
-		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
-		u8 *tries = &a->tries[skb_seq(skb) & (SSV_AGG_WINDOW - 1)];
-
-		if (++*tries >= AGG_MAX_TRIES) {
-			*tries = 0;
-			__skb_queue_tail(dropped, skb);
-			continue;
-		}
-		hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_RETRY);
-		__skb_queue_tail(&keep, skb);
+	skb = skb_peek(&a->retry);
+	if (skb) {
+		*start = skb_seq(skb);
+		found = true;
 	}
-	/* resent frames are older than anything already waiting */
-	skb_queue_splice(&keep, &a->retry);
+	skb_queue_walk(&a->inflight, skb) {
+		if (!found || seq_before(skb_seq(skb), *start)) {
+			*start = skb_seq(skb);
+			found = true;
+		}
+	}
+	return found;
+}
+
+static int agg_inflight_count(struct ssv_agg *a)
+{
+	struct sk_buff *skb;
+	int n = 0, last = -1;
+
+	skb_queue_walk(&a->inflight, skb) {
+		if (agg_cb(skb)->id != last) {
+			last = agg_cb(skb)->id;
+			n++;
+		}
+	}
+	return n;
 }
 
 static void agg_complete(struct ssv_dev *sd, struct sk_buff_head *q, bool acked)
@@ -154,7 +224,6 @@ void ssv_agg_flush(struct ssv_dev *sd, struct ssv_sta *ss, u8 tid)
 	__skb_queue_head_init(&drop);
 	spin_lock_bh(&sd->sta_lock);
 	a->state = SSV_AGG_OFF;
-	a->waiting = false;
 	skb_queue_splice_tail_init(&a->inflight, &drop);
 	skb_queue_splice_tail_init(&a->retry, &drop);
 	atomic_sub(skb_queue_len(&a->q), &sd->agg_queued);
@@ -236,30 +305,41 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 	struct ssv_tx_desc *d = (struct ssv_tx_desc *)sd->tx_buf;
 	u8 chain[SSV_TX_MAX_RATES];
 	struct sk_buff_head *src;
-	struct sk_buff *skb;
+	struct sk_buff *skb, *first_skb = NULL;
 	size_t len = SSV_TX_DESC_LEN, max_len;
-	u16 first = 0xffff;
-	int n = 0, i;
+	u16 start;
+	u8 id;
+	int n = 0, limit, i;
 	u8 *p;
 
+	if (agg_inflight_count(a) >= AGG_MAX_INFLIGHT)
+		return 0;
 	if (!ssv_rc_agg_chain(sd, ss, chain))
 		return 0;
 	max_len = min_t(size_t, agg_max_len[chain[SSV_TX_MAX_RATES - 1] - SSV_RATE_MCS_LGI],
 			AGG_MAX_BYTES);
+	max_len = min_t(size_t, max_len, SSV_TX_BUF_SIZE);
+	limit = min_t(int, a->buf_size, AGG_MAX_FRAMES);
+	id = a->next_id++;
+
+	/* everything sent must stay inside the peer's window */
+	if (!agg_window_start(a, &start)) {
+		skb = skb_peek(&a->q);
+		if (!skb)
+			return 0;
+		start = skb_seq(skb);
+	}
 
 	/* retries first (they are older), then new frames */
 	p = sd->tx_buf + SSV_TX_DESC_LEN;
 	for (src = &a->retry; ; src = &a->q) {
-		while (n < min_t(int, a->buf_size, AGG_MAX_FRAMES) &&
-		       (skb = skb_peek(src))) {
+		while (n < limit && (skb = skb_peek(src))) {
 			struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 			size_t sz = agg_mpdu_size(skb);
-			u16 seq = skb_seq(skb);
+			struct ssv_agg_cb *cb;
 			u16 dl;
 
-			if (first == 0xffff)
-				first = seq;
-			if (((seq - first) & 0xfff) >= a->buf_size ||
+			if (((skb_seq(skb) - start) & SEQ_MASK) >= a->buf_size ||
 			    len + sz > max_len)
 				break;
 			__skb_unlink(skb, src);
@@ -277,7 +357,14 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 			p += sz;
 			len += sz;
 			n++;
+
+			cb = agg_cb(skb);
+			cb->sent_at = jiffies;
+			cb->rate = chain[0];
+			cb->id = id;
 			__skb_queue_tail(&a->inflight, skb);
+			if (!first_skb)
+				first_skb = skb;
 		}
 		if (src == &a->q)
 			break;
@@ -285,7 +372,6 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 	if (!n)
 		return 0;
 
-	skb = skb_peek(&a->inflight);
 	memset(d, 0, SSV_TX_DESC_LEN);
 	d->len = len;
 	d->c_type = M2_TXREQ;
@@ -295,7 +381,7 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 	d->wsid = ss->wsid;
 	d->txq_idx = hwq;
 	d->hdr_offset = TXPB_OFFSET;
-	d->hdr_len = ieee80211_hdrlen(((struct ieee80211_hdr *)skb->data)->frame_control);
+	d->hdr_len = ieee80211_hdrlen(((struct ieee80211_hdr *)first_skb->data)->frame_control);
 	d->payload_offset = TXPB_OFFSET + d->hdr_len;
 	d->ack_policy = 1;
 	d->aggregation = 1;
@@ -313,11 +399,27 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 	d->frame_consume_time = d->rc_params[0].frame_consume_time;
 	d->dl_length = d->rc_params[0].dl_length;
 
-	a->rate = chain[0];
-	a->sent_frames = n;
-	dev_dbg(sd->dev, "agg: tid q%d send %d mpdu seq %u len %zu rate %u\n",
-		hwq, n, first, len, chain[0]);
+	dev_dbg(sd->dev, "agg: q%d id %u send %d mpdu seq %u len %zu rate %u\n",
+		hwq, id, n, skb_seq(first_skb), len, chain[0]);
 	return len;
+}
+
+/* Tell the peer to move its window past MPDUs we gave up on. */
+static void agg_send_bar(struct ssv_dev *sd, struct ieee80211_sta *sta,
+			 struct ssv_agg *a, u8 tid)
+{
+	struct sk_buff *skb;
+	u16 start;
+
+	if (!sd->vif)
+		return;
+	if (!agg_window_start(a, &start)) {
+		skb = skb_peek(&a->q);
+		if (!skb)
+			return;
+		start = skb_seq(skb);
+	}
+	ieee80211_send_bar(sd->vif, sta->addr, tid, start);
 }
 
 /*
@@ -335,64 +437,62 @@ bool ssv_agg_pump(struct ssv_dev *sd, bool *blocked)
 		struct ieee80211_sta *sta;
 		struct ssv_sta *ss;
 
-		rcu_read_lock();
-		sta = rcu_dereference(sd->sta[w]);
+		/* aggregates are written to the bus, which sleeps: no RCU here */
+		mutex_lock(&sd->agg_mutex);
+		sta = rcu_dereference_protected(sd->sta[w],
+						lockdep_is_held(&sd->agg_mutex));
 		if (!sta) {
-			rcu_read_unlock();
+			mutex_unlock(&sd->agg_mutex);
 			continue;
 		}
 		ss = (struct ssv_sta *)sta->drv_priv;
 		for (t = 0; t < SSV_AGG_TIDS; t++) {
 			struct ssv_agg *a = &ss->agg[t];
 			int hwq = ssv_tid_to_hwq(t);
+			struct sk_buff *skb, *next;
+			bool gave_up = false;
 			size_t len;
-			int ret;
 
 			if (a->state != SSV_AGG_OPERATIONAL)
 				continue;
-			if (a->waiting) {
-				if (!time_after(jiffies, a->sent_at + AGG_BA_TIMEOUT))
-					continue;
-				/* no Block Ack and no NO_BA event */
-				dev_dbg(sd->dev, "agg: tid %d BA timeout\n", t);
-				spin_lock_bh(&sd->sta_lock);
-				a->waiting = false;
-				agg_requeue_all(a, &drop);
-				spin_unlock_bh(&sd->sta_lock);
-			}
-			if (skb_queue_empty(&a->retry) && skb_queue_empty(&a->q))
-				continue;
-			if (!ssv_tx_budget(sd, hwq, AGG_MAX_BYTES)) {
-				*blocked = true;
-				continue;
-			}
 
+			/* aggregates with neither a Block Ack nor a NO_BA */
 			spin_lock_bh(&sd->sta_lock);
-			len = agg_build(sd, ss, a, hwq);
-			if (len) {
-				a->waiting = true;
-				a->sent_at = jiffies;
+			skb_queue_walk_safe(&a->inflight, skb, next) {
+				if ((u32)jiffies - agg_cb(skb)->sent_at < AGG_BA_TIMEOUT)
+					continue;
+				dev_dbg(sd->dev, "agg: tid %d seq %u timed out\n",
+					t, skb_seq(skb));
+				__skb_unlink(skb, &a->inflight);
+				gave_up |= agg_retry(a, skb, &drop);
 			}
 			spin_unlock_bh(&sd->sta_lock);
-			if (!len)
-				continue;
-			ret = ssv_tx_write(sd, hwq, len);
-			if (ret) {
+			if (gave_up)
+				agg_send_bar(sd, sta, a, t);
+
+			while (!skb_queue_empty(&a->retry) || !skb_queue_empty(&a->q)) {
+				if (!ssv_tx_budget(sd, hwq, AGG_MAX_BYTES)) {
+					*blocked = true;
+					break;
+				}
 				spin_lock_bh(&sd->sta_lock);
-				a->waiting = false;
-				agg_requeue_all(a, &drop);
+				len = agg_build(sd, ss, a, hwq);
 				spin_unlock_bh(&sd->sta_lock);
+				if (!len)
+					break;
+				if (ssv_tx_write(sd, hwq, len))
+					break;	/* the timeout takes care of them */
+				sent = true;
 			}
-			sent = true;
 		}
-		rcu_read_unlock();
+		mutex_unlock(&sd->agg_mutex);
 	}
 	agg_complete(sd, &drop, false);
 	return sent;
 }
 
 static struct ssv_agg *agg_lookup(struct ssv_dev *sd, u8 wsid, u8 tid,
-				  struct ssv_sta **ssp)
+				  struct ieee80211_sta **stap)
 {
 	struct ieee80211_sta *sta;
 
@@ -401,8 +501,72 @@ static struct ssv_agg *agg_lookup(struct ssv_dev *sd, u8 wsid, u8 tid,
 	sta = rcu_dereference(sd->sta[wsid]);
 	if (!sta)
 		return NULL;
-	*ssp = (struct ssv_sta *)sta->drv_priv;
-	return &(*ssp)->agg[tid];
+	*stap = sta;
+	return &((struct ssv_sta *)sta->drv_priv)->agg[tid];
+}
+
+static struct sk_buff *agg_find(struct ssv_agg *a, u16 seq)
+{
+	struct sk_buff *skb;
+
+	skb_queue_walk(&a->inflight, skb)
+		if (skb_seq(skb) == seq)
+			return skb;
+	return NULL;
+}
+
+/*
+ * Settle the MPDUs listed in @note: acknowledged if @bitmap (starting at
+ * @ssn) has their bit, resent otherwise.  @bitmap NULL means no Block Ack.
+ */
+static void agg_settle(struct ssv_dev *sd, struct ieee80211_sta *sta,
+		       struct ssv_agg *a, u8 tid, const struct ssv_ba_note *note,
+		       u16 ssn, const __le32 *bitmap)
+{
+	struct ssv_sta *ss = (struct ssv_sta *)sta->drv_priv;
+	struct sk_buff_head done, drop;
+	int i, frames = 0, acked = 0, rate = -1;
+
+	__skb_queue_head_init(&done);
+	__skb_queue_head_init(&drop);
+
+	spin_lock_bh(&sd->sta_lock);
+	for (i = 0; i < ARRAY_SIZE(note->seq); i++) {
+		u16 seq = le16_to_cpu(note->seq[i]);
+		struct sk_buff *skb;
+		u16 off;
+
+		if (seq > SEQ_MASK)
+			break;
+		skb = agg_find(a, seq);
+		if (!skb)
+			continue;
+		__skb_unlink(skb, &a->inflight);
+		if (rate < 0)
+			rate = agg_cb(skb)->rate;
+		frames++;
+		off = (seq - ssn) & SEQ_MASK;
+		if (bitmap && off < 64 &&
+		    (le32_to_cpu(bitmap[off / 32]) & BIT(off % 32))) {
+			agg_acked(a, skb, &done);
+			acked++;
+		} else {
+			agg_retry(a, skb, &drop);
+		}
+	}
+	if (rate >= 0)
+		ssv_rc_agg_result(sd, ss, rate, frames, acked,
+				  note->tried[0].count);
+	spin_unlock_bh(&sd->sta_lock);
+
+	dev_dbg(sd->dev, "agg: %s tid %u ssn %u acked %d/%d tried %u\n",
+		bitmap ? "BA" : "NO_BA", tid, ssn, acked, frames,
+		note->tried[0].count);
+	if (!skb_queue_empty(&drop))
+		agg_send_bar(sd, sta, a, tid);
+	ssv_tx_kick(sd);
+	agg_complete(sd, &done, true);
+	agg_complete(sd, &drop, false);
 }
 
 /* Block Ack forwarded by the firmware (RX path, process context). */
@@ -410,54 +574,19 @@ void ssv_agg_ba(struct ssv_dev *sd, struct sk_buff *skb)
 {
 	const struct ssv_ba_frame *ba = (const struct ssv_ba_frame *)skb->data;
 	const struct ssv_ba_note *note;
-	struct sk_buff_head done, drop;
-	struct ssv_sta *ss;
+	struct ieee80211_sta *sta;
 	struct ssv_agg *a;
-	struct sk_buff *m, *next;
-	u16 ssn;
-	u8 tid;
-	int acked = 0;
 
 	if (skb->len < sizeof(*ba) + sizeof(*note))
 		return;
 	note = (const struct ssv_ba_note *)(skb->data + skb->len - sizeof(*note));
-	tid = le16_to_cpu(ba->control) >> 12;
-	ssn = le16_to_cpu(ba->ssc) >> 4;
 
-	__skb_queue_head_init(&done);
-	__skb_queue_head_init(&drop);
 	rcu_read_lock();
-	a = agg_lookup(sd, note->wsid, tid, &ss);
-	if (!a || !a->waiting) {
-		dev_dbg(sd->dev, "agg: stray BA wsid %u tid %u len %u\n",
-			note->wsid, tid, skb->len);
-		goto out;
-	}
-
-	spin_lock_bh(&sd->sta_lock);
-	skb_queue_walk_safe(&a->inflight, m, next) {
-		u16 off = (skb_seq(m) - ssn) & 0xfff;
-
-		if (off < 64 && (le32_to_cpu(ba->bitmap[off / 32]) & BIT(off % 32))) {
-			__skb_unlink(m, &a->inflight);
-			a->tries[skb_seq(m) & (SSV_AGG_WINDOW - 1)] = 0;
-			__skb_queue_tail(&done, m);
-			acked++;
-		}
-	}
-	dev_dbg(sd->dev, "agg: BA tid %u ssn %u bm %08x%08x acked %d/%u tried %u\n",
-		tid, ssn, le32_to_cpu(ba->bitmap[1]), le32_to_cpu(ba->bitmap[0]),
-		acked, a->sent_frames, note->tried[0].count);
-	a->waiting = false;
-	agg_requeue_all(a, &drop);
-	ssv_rc_agg_result(sd, ss, a->rate, a->sent_frames, acked,
-			  note->tried[0].count);
-	spin_unlock_bh(&sd->sta_lock);
-	ssv_tx_kick(sd);
-out:
+	a = agg_lookup(sd, note->wsid, le16_to_cpu(ba->control) >> 12, &sta);
+	if (a && a->state == SSV_AGG_OPERATIONAL)
+		agg_settle(sd, sta, a, le16_to_cpu(ba->control) >> 12, note,
+			   le16_to_cpu(ba->ssc) >> 4, ba->bitmap);
 	rcu_read_unlock();
-	agg_complete(sd, &done, true);
-	agg_complete(sd, &drop, false);
 }
 
 /* The firmware gave up on an aggregate without any Block Ack. */
@@ -465,8 +594,7 @@ void ssv_agg_no_ba(struct ssv_dev *sd, const u8 *data, size_t len)
 {
 	const struct ssv_ba_note *note = (const struct ssv_ba_note *)data;
 	const struct ieee80211_hdr *hdr;
-	struct sk_buff_head drop;
-	struct ssv_sta *ss;
+	struct ieee80211_sta *sta;
 	struct ssv_agg *a;
 	u8 tid;
 
@@ -477,22 +605,12 @@ void ssv_agg_no_ba(struct ssv_dev *sd, const u8 *data, size_t len)
 		return;
 	tid = *ieee80211_get_qos_ctl((struct ieee80211_hdr *)hdr) &
 	      IEEE80211_QOS_CTL_TID_MASK;
-	dev_dbg(sd->dev, "agg: NO_BA wsid %u tid %u\n", note->wsid, tid);
 
-	__skb_queue_head_init(&drop);
 	rcu_read_lock();
-	a = agg_lookup(sd, note->wsid, tid, &ss);
-	if (a && a->waiting) {
-		spin_lock_bh(&sd->sta_lock);
-		a->waiting = false;
-		ssv_rc_agg_result(sd, ss, a->rate, a->sent_frames, 0,
-				  note->tried[0].count);
-		agg_requeue_all(a, &drop);
-		spin_unlock_bh(&sd->sta_lock);
-		ssv_tx_kick(sd);
-	}
+	a = agg_lookup(sd, note->wsid, tid, &sta);
+	if (a && a->state == SSV_AGG_OPERATIONAL)
+		agg_settle(sd, sta, a, tid, note, 0, NULL);
 	rcu_read_unlock();
-	agg_complete(sd, &drop, false);
 }
 
 int ssv_agg_action(struct ssv_dev *sd, struct ieee80211_vif *vif,
@@ -517,7 +635,6 @@ int ssv_agg_action(struct ssv_dev *sd, struct ieee80211_vif *vif,
 	case IEEE80211_AMPDU_TX_OPERATIONAL:
 		spin_lock_bh(&sd->sta_lock);
 		a->buf_size = clamp_t(u16, params->buf_size, 1, SSV_AGG_WINDOW);
-		a->waiting = false;
 		memset(a->tries, 0, sizeof(a->tries));
 		a->state = SSV_AGG_OPERATIONAL;
 		spin_unlock_bh(&sd->sta_lock);
