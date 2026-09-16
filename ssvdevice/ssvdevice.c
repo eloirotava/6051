@@ -169,7 +169,8 @@ void sta_cfg_set(void)
 		memset(cfg_cmd, '\0', sizeof(cfg_cmd));
 		memset(cfg_value, '\0', sizeof(cfg_value));
 		read_len = read_line(fp, buf, MAX_CHARS_PER_LINE);
-		sscanf(buf, "%s = %s", cfg_cmd, cfg_value);
+		/* cfg_cmd/cfg_value are 32 bytes on the stack: bound the scan */
+		sscanf(buf, "%31s = %31s", cfg_cmd, cfg_value);
 		if (!ischar(cfg_cmd) || !ischar(cfg_value)) {
 			pr_warn("Invalid configuration parameter: %s\n", buf);
 			continue;

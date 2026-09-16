@@ -222,9 +222,10 @@ static void ssv6xxx_set_80211_hw_capab(struct ssv_softc *sc)
 		}
 		if (sh->cfg.hw_caps & SSV6200_HT_CAP_SGI_20)
 			ht_info->cap |= IEEE80211_HT_CAP_SGI_20;
-
-                ht_info->cap |= IEEE80211_HT_CAP_SUP_WIDTH_20_40;
-		ht_info->cap |= IEEE80211_HT_CAP_SGI_40;
+		/* The 6051 is a 20 MHz-only radio: never advertise HT40, or an
+		 * HT40 AP would send frames we cannot receive. */
+		if (sh->cfg.hw_caps & SSV6200_HT_CAP_SGI_40)
+			ht_info->cap |= IEEE80211_HT_CAP_SGI_40;
 
 		ht_info->ampdu_factor = IEEE80211_HT_MAX_AMPDU_32K;
 		ht_info->ampdu_density = IEEE80211_HT_MPDU_DENSITY_8;
@@ -328,8 +329,6 @@ void ssv6xxx_watchdog_restart_hw(struct ssv_softc *sc)
 extern struct rssi_res_st rssi_res;
 void ssv6200_watchdog_timeout(struct timer_list *t)
 {
-	static u32 count = 0;
-	struct rssi_res_st *rssi_tmp0 = NULL, *rssi_tmp1 = NULL;
 	struct ssv_softc *sc = container_of(t, struct ssv_softc, watchdog_timeout);
 	if (sc->watchdog_flag == WD_BARKING) {
 		ssv6xxx_watchdog_restart_hw(sc);
@@ -338,20 +337,9 @@ void ssv6200_watchdog_timeout(struct timer_list *t)
 	}
 	if (sc->watchdog_flag != WD_SLEEP)
 		sc->watchdog_flag = WD_BARKING;
-	count++;
-	if (count == 6) {
-		count = 0;
-		if (list_empty(&rssi_res.rssi_list)) {
-			return;
-		}
-		list_for_each_entry_safe(rssi_tmp0, rssi_tmp1,
-					 &rssi_res.rssi_list, rssi_list) {
-			if (rssi_tmp0->timeout) {
-				list_del_rcu(&rssi_tmp0->rssi_list);
-				kfree(rssi_tmp0);
-			}
-		}
-	}
+	/* The RSSI cache is reaped by the RX path under sc->mutex; freeing it
+	 * from this softirq raced with that walk.  Note the old early return
+	 * here also skipped mod_timer() and silently killed the watchdog. */
 	mod_timer(&sc->watchdog_timeout, jiffies + WATCHDOG_TIMEOUT);
 	return;
 }
@@ -945,6 +933,13 @@ static int ssv6xxx_init_hw(struct ssv_hw *sh)
 			default:
 				dev_dbg(sh->sc->dev, "Use default power setting\n");
 				break;
+			}
+			if (sh->cfg.wifi_tx_gain_level_b >= ARRAY_SIZE(wifi_tx_gain) ||
+			    sh->cfg.wifi_tx_gain_level_gn >= ARRAY_SIZE(wifi_tx_gain)) {
+				dev_warn(sh->sc->dev, "wifi_tx_gain_level must be 0..%zu, ignoring\n",
+					 ARRAY_SIZE(wifi_tx_gain) - 1);
+				sh->cfg.wifi_tx_gain_level_b = 0;
+				sh->cfg.wifi_tx_gain_level_gn = 0;
 			}
 			if (sh->cfg.wifi_tx_gain_level_b) {
 				phy_setting[i].data &= 0xffff0000;

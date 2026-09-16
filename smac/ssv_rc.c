@@ -1508,20 +1508,31 @@ void ssv6xxx_rc_mac8011_rate_idx(struct ssv_softc *sc,
 {
 	struct ssv_rate_ctrl *ssv_rc = sc->rc;
 	struct ssv_rc_rate *rc_rate;
-	BUG_ON(hw_rate_idx >= RATE_TABLE_SIZE && hw_rate_idx < 0);
+	if (unlikely(hw_rate_idx < 0 || hw_rate_idx >= RATE_TABLE_SIZE)) {
+		/* Corrupted RX descriptor: report the lowest legacy rate. */
+		hw_rate_idx = 0;
+	}
 	rc_rate = &ssv_rc->rc_table[hw_rate_idx];
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0)
+	/*
+	 * Since 4.12 the encoding lives in rxs->encoding/enc_flags.  OR-ing
+	 * these values into rxs->flag set RX_FLAG_MMIC_ERROR (BIT 0) for every
+	 * short-preamble CCK frame -- mac80211 then drops it as a Michael MIC
+	 * failure when the IV was stripped by HW crypto -- and
+	 * RX_FLAG_ONLY_MONITOR (BIT 2) for every HT frame.
+	 */
 	if (rc_rate->rc_flags & RC_FLAG_HT) {
-		rxs->flag |= RC_FLAG_HT;
+		rxs->encoding = RX_ENC_HT;
 		if (rc_rate->rc_flags & RC_FLAG_HT_SGI)
-			rxs->flag |= RX_ENC_FLAG_SHORT_GI;
+			rxs->enc_flags |= RX_ENC_FLAG_SHORT_GI;
 	} else {
+		rxs->encoding = RX_ENC_LEGACY;
 		if (rc_rate->rc_flags & RC_FLAG_SHORT_PREAMBLE)
-			rxs->flag |= RX_ENC_FLAG_SHORTPRE;
+			rxs->enc_flags |= RX_ENC_FLAG_SHORTPRE;
 	}
 #else
 	if (rc_rate->rc_flags & RC_FLAG_HT) {
-		rxs->flag |= RC_FLAG_HT;
+		rxs->flag |= RX_FLAG_HT;
 		if (rc_rate->rc_flags & RC_FLAG_HT_SGI)
 			rxs->flag |= RX_FLAG_SHORT_GI;
 	} else {

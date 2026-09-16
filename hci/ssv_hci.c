@@ -359,7 +359,7 @@ static int ssv6xxx_hci_tx_handler(void *dev, int max_count)
 		//BUG_ON(SSV6200_ID_TX_THRESHOLD < txq_info2.tx_use_id);
 		if (SSV6200_PAGE_TX_THRESHOLD < txq_info2.tx_use_page)
 			return 0;
-		if (SSV6200_ID_TX_THRESHOLD < txq_info2.tx_use_page)
+		if (SSV6200_ID_TX_THRESHOLD < txq_info2.tx_use_id)
 			return 0;
 		hw_resource.free_tx_page =
 		    SSV6200_PAGE_TX_THRESHOLD - txq_info2.tx_use_page;
@@ -379,7 +379,7 @@ static int ssv6xxx_hci_tx_handler(void *dev, int max_count)
 		//BUG_ON(SSV6200_ID_TX_THRESHOLD < txq_info.tx_use_id);
 		if (SSV6200_PAGE_TX_THRESHOLD < txq_info.tx_use_page)
 			return 0;
-		if (SSV6200_ID_TX_THRESHOLD < txq_info.tx_use_page)
+		if (SSV6200_ID_TX_THRESHOLD < txq_info.tx_use_id)
 			return 0;
 		hw_resource.free_tx_page =
 		    SSV6200_PAGE_TX_THRESHOLD - txq_info.tx_use_page;
@@ -393,10 +393,15 @@ static int ssv6xxx_hci_tx_handler(void *dev, int max_count)
 		    SSV6200_ID_AC_VI_OUT_QUEUE - txq_info.txq2_size;
 		hw_resource.max_tx_frame[3] =
 		    SSV6200_ID_AC_VO_OUT_QUEUE - txq_info.txq3_size;
-		BUG_ON(hw_resource.max_tx_frame[3] < 0);
-		BUG_ON(hw_resource.max_tx_frame[2] < 0);
-		BUG_ON(hw_resource.max_tx_frame[1] < 0);
-		BUG_ON(hw_resource.max_tx_frame[0] < 0);
+		/* Values come from a register read over SDIO; a glitch must
+		 * not take the whole kernel down.  Retry on the next IRQ. */
+		if (hw_resource.max_tx_frame[3] < 0 ||
+		    hw_resource.max_tx_frame[2] < 0 ||
+		    hw_resource.max_tx_frame[1] < 0 ||
+		    hw_resource.max_tx_frame[0] < 0) {
+			ctrl_hci->read_rs0_info_fail++;
+			return 0;
+		}
 	}
 	{
 		tx_count = ssv6xxx_hci_xmit(hw_txq, max_count, &hw_resource);
@@ -436,16 +441,19 @@ static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 		if (hctl->isr_mib_enable)
 			getnstimeofday(&rx_io_start_time);
 #endif
+		/* in: room in rx_buf, out: frame length */
+		dlen = MAX_FRAME_SIZE;
 		ret = IF_RECV(hctl, hctl->rx_buf->data, &dlen);
 #ifdef CONFIG_SSV6XXX_DEBUGFS
 		if (hctl->isr_mib_enable)
 			getnstimeofday(&rx_io_end_time);
 #endif
 		if (ret < 0 || dlen <= 0) {
-			pr_warn("%s(): IF_RECV() retruns %d (dlen=%d)\n",
+			pr_warn_ratelimited("%s(): IF_RECV() returns %d (dlen=%d)\n",
 			       __FUNCTION__, ret, (int)dlen);
-			if (ret != -84 || dlen > MAX_FRAME_SIZE)
-				break;
+			/* Never hand a failed/short read to the stack: the
+			 * buffer holds garbage and dlen is not trustworthy. */
+			break;
 		}
 		rx_mpdu = hctl->rx_buf;
 		hctl->rx_buf = ssv_skb_alloc(MAX_FRAME_SIZE);
@@ -522,16 +530,19 @@ static void ssv6xxx_hci_rx_work(struct work_struct *work)
 		if (ctrl_hci->isr_mib_enable)
 			getnstimeofday(&rx_io_start_time);
 #endif
+		/* in: room in rx_buf, out: frame length */
+		dlen = MAX_FRAME_SIZE;
 		ret = IF_RECV(ctrl_hci, ctrl_hci->rx_buf->data, &dlen);
 #ifdef CONFIG_SSV6XXX_DEBUGFS
 		if (ctrl_hci->isr_mib_enable)
 			getnstimeofday(&rx_io_end_time);
 #endif
 		if (ret < 0 || dlen <= 0) {
-			pr_warn("%s(): IF_RECV() retruns %d (dlen=%d)\n",
+			pr_warn_ratelimited("%s(): IF_RECV() returns %d (dlen=%d)\n",
 			       __FUNCTION__, ret, (int)dlen);
-			if (ret != -84 || dlen > MAX_FRAME_SIZE)
-				break;
+			/* Never hand a failed/short read to the stack: the
+			 * buffer holds garbage and dlen is not trustworthy. */
+			break;
 		}
 		rx_mpdu = ctrl_hci->rx_buf;
 		ctrl_hci->rx_buf = ssv_skb_alloc(MAX_FRAME_SIZE);

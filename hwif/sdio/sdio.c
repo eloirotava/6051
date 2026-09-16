@@ -26,8 +26,14 @@
 #include <linux/mmc/host.h>
 #include <linux/slab.h>
 
+/*
+ * The MMC core needs DMA-safe buffers, but register I/O here uses stack
+ * variables.  Bounce every CMD53 through a kmalloc() buffer.  All callers
+ * hold the SDIO host and may sleep (the transfer itself sleeps), so
+ * GFP_KERNEL is fine and avoids spurious atomic allocation failures.
+ */
 static inline int ssv_safe_sdio_toio(struct sdio_func *f, unsigned int a, void *s, int c) {
-    void *b = kmalloc(c, GFP_ATOMIC);
+    void *b = kmalloc(c, GFP_KERNEL);
     int r;
     if (!b) return -ENOMEM;
     memcpy(b, s, c);
@@ -37,11 +43,25 @@ static inline int ssv_safe_sdio_toio(struct sdio_func *f, unsigned int a, void *
 }
 
 static inline int ssv_safe_sdio_fromio(struct sdio_func *f, void *d, unsigned int a, int c) {
-    void *b = kmalloc(c, GFP_ATOMIC);
+    void *b = kmalloc(c, GFP_KERNEL);
     int r;
     if (!b) return -ENOMEM;
     r = sdio_memcpy_fromio(f, b, a, c);
     if (r == 0) memcpy(d, b, c);
+    kfree(b);
+    return r;
+}
+
+/* Like ssv_safe_sdio_toio(), but only @len bytes of @s are valid: the
+ * block-alignment padding is zero-filled instead of read past the frame. */
+static inline int ssv_safe_sdio_toio_padded(struct sdio_func *f, unsigned int a,
+                                            void *s, size_t len, size_t aligned) {
+    u8 *b = kmalloc(aligned, GFP_KERNEL);
+    int r;
+    if (!b) return -ENOMEM;
+    memcpy(b, s, len);
+    memset(b + len, 0, aligned - len);
+    r = sdio_memcpy_toio(f, a, b, aligned);
     kfree(b);
     return r;
 }
@@ -329,10 +349,10 @@ ssv6xxx_sdio_upload_firmware(struct device *child, const u8 *firmware, u32 firmw
 
 	glue = dev_get_drvdata(child->parent);
 
-    if ((wlan_data.is_enabled == false) &&
-        (glue == NULL) &&
+    if ((wlan_data.is_enabled == false) ||
+        (glue == NULL) ||
         (glue->dev_ready == false))
-        goto out;
+        return -ENODEV;
 
     buffer = (u8 *)kzalloc(FW_BLOCK_SIZE, GFP_KERNEL);
     if (buffer == NULL) {
@@ -503,7 +523,8 @@ ssv6xxx_sdio_read(struct device *child, void *buf, size_t *size)
 {
 
 	int ret;
-    u32 data_size;
+    u32 data_size, aligned_size;
+    size_t buf_size = *size;
 
 	struct ssv6xxx_sdio_glue *glue = dev_get_drvdata(child->parent);
 	struct sdio_func *func;
@@ -527,7 +548,20 @@ ssv6xxx_sdio_read(struct device *child, void *buf, size_t *size)
         goto out;
     }
 
-    ret = sdio_memcpy_fromio(func, buf, glue->ioport_data, sdio_align_size(func, data_size));
+    /*
+     * The length comes from the chip.  A glitched bus can return 0 or
+     * 0xffff here; copying that into the fixed RX buffer would corrupt
+     * kernel memory, so refuse anything that does not fit.
+     */
+    aligned_size = sdio_align_size(func, data_size);
+    if (unlikely(data_size == 0 || aligned_size > buf_size)) {
+        dev_err(child->parent, "sdio read bogus len %u (aligned %u, buf %zu)\n",
+                data_size, aligned_size, buf_size);
+        ret = -EIO;
+        goto out;
+    }
+
+    ret = sdio_memcpy_fromio(func, buf, glue->ioport_data, aligned_size);
 
     if (unlikely(ret)) {
         dev_err(child->parent, "sdio read failed size ret[%d]\n", ret);
@@ -549,26 +583,17 @@ ssv6xxx_sdio_write(struct device *child, void *buf, size_t len, u8 queue_num)
 	int ret;
 	struct ssv6xxx_sdio_glue *glue = dev_get_drvdata(child->parent);
 	struct sdio_func *func;
-	void *ptr;
 
     ret_if_not_ready(-1);
-
-#ifdef CONFIG_ARM64
-    if (((u64) buf) & 3) {
-#else
-    if (((u32) buf) & 3) {
-#endif
-        memcpy(glue->dma_skb->data, buf, len);
-        ptr = glue->dma_skb->data;
-    } else
-        ptr = buf;
 
     func = dev_to_sdio_func(glue->dev);
 
     sdio_claim_host(func);
 
-    len = sdio_align_size(func, len);
-    ret = sdio_memcpy_toio(func, glue->ioport_data, ptr, len);
+    /* The bounce buffer is kmalloc()ed, hence word aligned: no need for the
+     * old copy into the fixed-size dma_skb, which overflowed on long frames. */
+    ret = ssv_safe_sdio_toio_padded(func, glue->ioport_data, buf, len,
+                                    sdio_align_size(func, len));
 
     if (unlikely(ret))
         dev_err(glue->dev, "sdio write failed, ret=%d\n", ret);

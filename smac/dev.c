@@ -17,6 +17,7 @@
 #include <linux/nl80211.h>
 #include <linux/etherdevice.h>
 #include <linux/if_ether.h>
+#include <linux/unaligned.h>
 #include <linux/delay.h>
 #include <linux/version.h>
 #include <linux/time.h>
@@ -3356,6 +3357,7 @@ void mitigate_cci(struct ssv_softc *sc, u32 input_level)
 }
 
 #define RSSI_SMOOTHING_SHIFT 5
+#define SSV_RSSI_CACHE_MAX 32
 #define RSSI_DECIMAL_POINT_SHIFT 6
 static void _proc_data_rx_skb(struct ssv_softc *sc, struct sk_buff *rx_skb)
 {
@@ -3388,6 +3390,13 @@ static void _proc_data_rx_skb(struct ssv_softc *sc, struct sk_buff *rx_skb)
 		}
 	}
 #endif
+	/* Descriptor + PHY info + trailing PHY padding + minimal 802.11 header;
+	 * anything shorter would make the pointers below walk off the frame. */
+	if (unlikely(rx_skb->len < SSV6XXX_RX_DESC_LEN + sc->sh->rx_pinfo_pad +
+		     sizeof(struct ssv6200_rxphy_info_padding) + 10)) {
+		dev_dbg(sc->dev, "drop runt RX frame (%u bytes)\n", rx_skb->len);
+		goto drop_rx;
+	}
 	rxdesc = (struct ssv6200_rx_desc *)rx_skb->data;
 	rxphy = (struct ssv6200_rxphy_info *)(rx_skb->data + sizeof(*rxdesc));
 	rxphypad =
@@ -3408,7 +3417,7 @@ static void _proc_data_rx_skb(struct ssv_softc *sc, struct sk_buff *rx_skb)
 	memset(rxs, 0, sizeof(struct ieee80211_rx_status));
 	ssv6xxx_rc_mac8011_rate_idx(sc, rxdesc->rate_idx, rxs);
 
-	rxs->mactime = *((u32 *) & rx_skb->data[28]);
+	rxs->mactime = get_unaligned_le32(&rx_skb->data[28]);
 	chan = sc->hw->conf.chandef.chan;
 	rxs->band = chan->band;
 	rxs->freq = chan->center_freq;
@@ -3470,66 +3479,58 @@ static void _proc_data_rx_skb(struct ssv_softc *sc, struct sk_buff *rx_skb)
 #endif
 				mitigate_cci(sc, rxphypad->rpci);
 			} else {
+				struct rssi_res_st *res, *tmp;
+				int entries = 0;
 				mutex_lock(&sc->mutex);
-				list_for_each_entry(p_rssi_res,
-						    &rssi_res.rssi_list,
-						    rssi_list) {
-					if (!memcmp
-					    (p_rssi_res->bssid, hdr->addr2,
-					     ETH_ALEN)) {
-						{
-							p_rssi_res->rssi =
-							    ((rxphypad->
-							      rpci <<
-							      RSSI_DECIMAL_POINT_SHIFT)
-							     +
-							     ((p_rssi_res->
-							       rssi <<
-							       RSSI_SMOOTHING_SHIFT)
-							      -
-							      p_rssi_res->
-							      rssi)) >>
-							    RSSI_SMOOTHING_SHIFT;
-							rxphypad->rpci =
-							    (p_rssi_res->
-							     rssi >>
-							     RSSI_DECIMAL_POINT_SHIFT);
-						}
-						p_rssi_res->cache_jiffies =
-						    jiffies;
+				/*
+				 * Per-BSSID beacon RSSI cache for APs we are not
+				 * associated with.  Expired entries are reaped
+				 * here, under sc->mutex; the watchdog timer used
+				 * to kfree() them from softirq context while this
+				 * loop walked the list.  The cache is also capped
+				 * so a busy neighbourhood cannot grow it forever.
+				 */
+				list_for_each_entry_safe(res, tmp,
+							 &rssi_res.rssi_list,
+							 rssi_list) {
+					if (!memcmp(res->bssid, hdr->addr2,
+						    ETH_ALEN)) {
+						res->rssi =
+						    ((rxphypad->rpci <<
+						      RSSI_DECIMAL_POINT_SHIFT) +
+						     ((res->rssi <<
+						       RSSI_SMOOTHING_SHIFT) -
+						      res->rssi)) >>
+						    RSSI_SMOOTHING_SHIFT;
+						rxphypad->rpci =
+						    (res->rssi >>
+						     RSSI_DECIMAL_POINT_SHIFT);
+						res->cache_jiffies = jiffies;
 						found = 1;
-						break;
-					} else {
-						if (p_rssi_res->rssi) {
-							if (time_after
-							    (jiffies,
-							     p_rssi_res->
-							     cache_jiffies +
-							     msecs_to_jiffies
-							     (40000))) {
-								p_rssi_res->
-								    timeout = 1;
-							}
-						}
+						entries++;
+						continue;
 					}
+					if (time_after(jiffies,
+						       res->cache_jiffies +
+						       msecs_to_jiffies(40000))) {
+						list_del(&res->rssi_list);
+						kfree(res);
+						continue;
+					}
+					entries++;
 				}
-				if (!found) {
-					p_rssi_res =
-					    kmalloc(sizeof(struct rssi_res_st),
-						    GFP_KERNEL);
-					memcpy(p_rssi_res->bssid, hdr->addr2,
-					       ETH_ALEN);
-					p_rssi_res->cache_jiffies = jiffies;
-					p_rssi_res->rssi =
-					    (rxphypad->
-					     rpci << RSSI_DECIMAL_POINT_SHIFT);
-					p_rssi_res->timeout = 0;
-					INIT_LIST_HEAD(&p_rssi_res->rssi_list);
-					list_add_tail_rcu(&
-							  (p_rssi_res->
-							   rssi_list),
-							  &(rssi_res.
-							    rssi_list));
+				if (!found && entries < SSV_RSSI_CACHE_MAX) {
+					res = kmalloc(sizeof(*res), GFP_KERNEL);
+					if (res) {
+						memcpy(res->bssid, hdr->addr2,
+						       ETH_ALEN);
+						res->cache_jiffies = jiffies;
+						res->rssi = (rxphypad->rpci <<
+							     RSSI_DECIMAL_POINT_SHIFT);
+						res->timeout = 0;
+						list_add_tail(&res->rssi_list,
+							      &rssi_res.rssi_list);
+					}
 				}
 				mutex_unlock(&sc->mutex);
 			}
@@ -3618,6 +3619,8 @@ static void _proc_data_rx_skb(struct ssv_softc *sc, struct sk_buff *rx_skb)
 		if (sta == NULL)
 			goto drop_rx;
 		sta_priv = (struct ssv_sta_priv_data *)sta->drv_priv;
+		if (sta_priv->sta_info == NULL)
+			goto drop_rx;
 		vif = sta_priv->sta_info->vif;
 		if (vif == NULL)
 			goto drop_rx;
