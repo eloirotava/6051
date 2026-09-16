@@ -183,7 +183,11 @@ AMPDU:
    por WARN/leak.
 6. **Boot pelo mini** (só com ok do dono): instalar em `updates/`,
    blacklist do legado, 5+ reboots limpos (há `boottest.sh` nas tools).
-7. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
+7. **RX STBC / Greenfield**: o datasheet diz que o chip suporta; o
+   legado só anunciava com `hw_cap_gf = on` no cfg (o cfg atual deixa
+   `off`). Testar `IEEE80211_HT_CAP_RX_STBC` (1 stream) sozinho e medir o
+   down antes de anunciar GF.
+8. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
    MAINTAINERS, firmware em linux-firmware, nome definitivo do módulo.
 
 Fora do escopo: AP/hotspot, P2P, IBSS, 40 MHz (o chip é HT20), monitor.
@@ -193,6 +197,12 @@ Fora do escopo: AP/hotspot, P2P, IBSS, 40 MHz (o chip é HT20), monitor.
 - Driver legado limpo: branch `limpeza` (`/root/ssvref/6051-limpeza`),
   arquivos úteis: `smac/ampdu.c`, `smac/dev.c`, `smac/init.c`,
   `include/ssv6200_common.h`, `hwif/sdio/sdio.c`.
-- Datasheets sugeridos pelo dono (ainda não lidos):
-  <https://pt.scribd.com/document/732242071/5bac8f3815d5b>,
+- Datasheet do módulo iTM1020 (usa o SV6051P):
   <https://www.iottech-corp.com/datasheet/iot/iTM1020_Datasheet_V1.6_12052016.pdf>.
+  O que interessa: SDIO 2.0 a **50 MHz** (4 e 1 bit); 802.11n MCS0-7 só
+  em 20 MHz, GI longo e curto; agregação, RIFS, **STBC** e **Greenfield**
+  anunciados; TX típico 18 dBm (b), 14 dBm (g), 13.5 dBm (n); sensibilidade
+  MCS7 -70 dBm; `LDO_EN` liga/desliga o chip; POR em 1.3 ms, depois o host
+  carrega o firmware (DPLL estabiliza em 100 µs). Não traz registradores.
+- <https://pt.scribd.com/document/732242071/5bac8f3815d5b> ("SV6051P WLAN
+  Chip Datasheet"): o Scribd não entrega o conteúdo sem login; não foi lido.
