@@ -38,12 +38,8 @@
 #include "ap.h"
 #include "efuse.h"
 #include "sar.h"
-#include "ssv_cfgvendor.h"
 
 #include "linux_80211.h"
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-#include "ssv6xxx_debugfs.h"
-#endif
 
 #define WIFI_FIRMWARE_NAME "ssv6051-sw.bin"
 static const struct ieee80211_iface_limit ssv6xxx_p2p_limits[] = {
@@ -186,11 +182,7 @@ int ssv6xxx_do_iq_calib(struct ssv_hw *sh, struct ssv6xxx_iqk_cfg *p_cfg)
 #define HT_CAP_RX_STBC_ONE_STREAM 0x1
 #if defined(CONFIG_PM)
 static const struct wiphy_wowlan_support wowlan_support = {
-#ifdef SSV_WAKEUP_HOST
-	.flags = WIPHY_WOWLAN_ANY,
-#else
 	.flags = WIPHY_WOWLAN_DISCONNECT,
-#endif
 	.n_patterns = 0,
 	.pattern_max_len = 0,
 	.pattern_min_len = 0,
@@ -267,11 +259,7 @@ static void ssv6xxx_set_80211_hw_capab(struct ssv_softc *sc)
 		    &sc->sbands[INDEX_80211_BAND_2GHZ];
 	}
 	if (sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX)
-#ifdef PREFER_RX
-		hw->max_rx_aggregation_subframes = 64;
-#else
 		hw->max_rx_aggregation_subframes = 16;
-#endif
 	else
 		hw->max_rx_aggregation_subframes = 12;
 	hw->max_tx_aggregation_subframes = 64;
@@ -298,22 +286,6 @@ static void ssv6xxx_set_80211_hw_capab(struct ssv_softc *sc)
 	hw->wiphy->wowlan = &wowlan_support;
 #endif
 
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 14, 0)) && defined(CONFIG_SSV_VENDOR_EXT_SUPPORT)
-    {
-        int err = 0;
-        struct ssv_softc *softc = (struct ssv_softc *)hw->priv;
-        if (softc)
-        {
-            set_wiphy_dev(hw->wiphy, softc->dev);
-            *((struct ssv_softc **)wiphy_priv(hw->wiphy)) = softc;
-        }
-       	dev_dbg(sc->dev, "Registering Vendor80211\n");
-       	err = ssv_cfgvendor_attach(hw->wiphy);
-       	if (unlikely(err < 0)) {
-       		dev_err(sc->dev, "Couldn not attach vendor commands (%d)\n", err);
-       	}
-    }
-#endif /* (LINUX_VERSION_CODE > KERNEL_VERSION(3, 14, 0)) || defined(WL_VENDOR_EXT_SUPPORT) */
 }
 
 void ssv6xxx_watchdog_restart_hw(struct ssv_softc *sc)
@@ -386,9 +358,6 @@ static int ssv6xxx_init_softc(struct ssv_softc *sc)
 	spin_lock_init(&sc->bcast_txq.txq_lock);
 	skb_queue_head_init(&sc->bcast_txq.qhead);
 	spin_lock_init(&sc->ps_state_lock);
-#ifdef CONFIG_P2P_NOA
-	spin_lock_init(&sc->p2p_noa.p2p_config_lock);
-#endif
 	if (sc->sh->cfg.hw_caps & SSV6200_HW_CAP_2GHZ) {
 		channels = kmemdup(ssv6200_2ghz_chantable,
 				   sizeof(ssv6200_2ghz_chantable), GFP_KERNEL);
@@ -415,9 +384,6 @@ static int ssv6xxx_init_softc(struct ssv_softc *sc)
 	init_waitqueue_head(&sc->tx_wait_q);
 	sc->tx_wait_q_woken = 0;
 	skb_queue_head_init(&sc->tx_skb_q);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	sc->max_tx_skb_q_len = 0;
-#endif
 	sc->tx_task = kthread_run(ssv6xxx_tx_task, sc, "ssv6xxx_tx_task");
 	sc->tx_q_empty = false;
 	skb_queue_head_init(&sc->tx_done_q);
@@ -573,20 +539,6 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 	    (SSV6200_PAGE_TX_THRESHOLD << ID_TX_LEN_THOLD_SFT) |
 	    (SSV6200_PAGE_RX_THRESHOLD << ID_RX_LEN_THOLD_SFT);
 	SMAC_REG_WRITE(sh, ADR_ID_LEN_THREADSHOLD1, id_len);
-#ifdef CONFIG_SSV_CABRIO_MB_DEBUG
-	SMAC_REG_READ(sh, ADR_MB_DBG_CFG3, &regval);
-	regval |= (debug_buffer << 0);
-	SMAC_REG_WRITE(sh, ADR_MB_DBG_CFG3, regval);
-	SMAC_REG_READ(sh, ADR_MB_DBG_CFG2, &regval);
-	regval |= (DEBUG_SIZE << 16);
-	SMAC_REG_WRITE(sh, ADR_MB_DBG_CFG2, regval);
-	SMAC_REG_READ(sh, ADR_MB_DBG_CFG1, &regval);
-	regval |= (1 << MB_DBG_EN_SFT);
-	SMAC_REG_WRITE(sh, ADR_MB_DBG_CFG1, regval);
-	SMAC_REG_READ(sh, ADR_MBOX_HALT_CFG, &regval);
-	regval |= (1 << MB_ERR_AUTO_HALT_EN_SFT);
-	SMAC_REG_WRITE(sh, ADR_MBOX_HALT_CFG, regval);
-#endif
 	SMAC_REG_READ(sc->sh, ADR_MTX_BCN_EN_MISC, &regval);
 	regval |= (1 << MTX_TSF_TIMER_EN_SFT);
 	SMAC_REG_WRITE(sc->sh, ADR_MTX_BCN_EN_MISC, regval);
@@ -682,12 +634,7 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 	SMAC_REG_WRITE(sh, ADR_RX_FLOW_DATA,
 		       M_ENG_MACRX | (M_ENG_ENCRYPT_SEC << 4) | (M_ENG_HWHCI <<
 								 8));
-#if defined(CONFIG_P2P_NOA) || defined(CONFIG_RX_MGMT_CHECK)
-	SMAC_REG_WRITE(sh, ADR_RX_FLOW_MNG,
-		       M_ENG_MACRX | (M_ENG_CPU << 4) | (M_ENG_HWHCI << 8));
-#else
 	SMAC_REG_WRITE(sh, ADR_RX_FLOW_MNG, M_ENG_MACRX | (M_ENG_HWHCI << 4));
-#endif
 #if Enable_AMPDU_FW_Retry
 	SMAC_REG_WRITE(sh, ADR_RX_FLOW_CTRL,
 		       M_ENG_MACRX | (M_ENG_CPU << 4) | (M_ENG_HWHCI << 8));
@@ -702,22 +649,6 @@ int ssv6xxx_init_mac(struct ssv_hw *sh)
 	SMAC_REG_WRITE(sh, ADR_TX_LIMIT_INTR, 0x80000000 |
 		       SSV6200_TX_LOWTHRESHOLD_ID_TRIGGER << 16 |
 		       SSV6200_TX_LOWTHRESHOLD_PAGE_TRIGGER);
-#ifdef CONFIG_SSV_SUPPORT_BTCX
-	SMAC_REG_WRITE(sh, ADR_BTCX0,
-		       COEXIST_EN_MSK | (WIRE_MODE_SZ << WIRE_MODE_SFT)
-		       | WIFI_TX_SW_POL_MSK | BT_SW_POL_MSK);
-	SMAC_REG_WRITE(sh, ADR_BTCX1,
-		       SSV6200_BT_PRI_SMP_TIME | (SSV6200_BT_STA_SMP_TIME <<
-						  BT_STA_SMP_TIME_SFT)
-		       | (SSV6200_WLAN_REMAIN_TIME << WLAN_REMAIN_TIME_SFT));
-	SMAC_REG_WRITE(sh, ADR_SWITCH_CTL, BT_2WIRE_EN_MSK);
-	SMAC_REG_WRITE(sh, ADR_PAD7, 1);
-	SMAC_REG_WRITE(sh, ADR_PAD8, 0);
-	SMAC_REG_WRITE(sh, ADR_PAD9, 1);
-	SMAC_REG_WRITE(sh, ADR_PAD25, 1);
-	SMAC_REG_WRITE(sh, ADR_PAD27, 8);
-	SMAC_REG_WRITE(sh, ADR_PAD28, 8);
-#endif
 	dev_info(sh->sc->dev, "attempt to load firmware %s\n", WIFI_FIRMWARE_NAME);
 	ret = SMAC_LOAD_FW(sh, WIFI_FIRMWARE_NAME, 0);
 
@@ -1228,18 +1159,12 @@ static int ssv6xxx_init_device(struct ssv_softc *sc, const char *name)
 		kfree(sh);
 		return error;
 	}
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	ssv6xxx_init_debugfs(sc, name);
-#endif
 	return 0;
 }
 
 static void ssv6xxx_deinit_device(struct ssv_softc *sc)
 {
 	dev_dbg(sc->dev, "%s(): \n", __FUNCTION__);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	ssv6xxx_deinit_debugfs(sc);
-#endif
 	ssv6xxx_rf_disable(sc->sh);
 	ieee80211_unregister_hw(sc->hw);
 	ssv6xxx_deinit_hw(sc);
@@ -1253,9 +1178,6 @@ int ssv6xxx_dev_probe(struct platform_device *pdev)
 {
 #ifdef CONFIG_SSV6200_CLI_ENABLE
 	extern struct ssv_softc *ssv_dbg_sc;
-#endif
-#ifdef CONFIG_SSV_SMARTLINK
-	extern struct ssv_softc *ssv_smartlink_sc;
 #endif
 	struct ssv_softc *softc;
 	struct ieee80211_hw *hw;
@@ -1284,9 +1206,6 @@ int ssv6xxx_dev_probe(struct platform_device *pdev)
 	}
 #ifdef CONFIG_SSV6200_CLI_ENABLE
 	ssv_dbg_sc = softc;
-#endif
-#ifdef CONFIG_SSV_SMARTLINK
-	ssv_smartlink_sc = softc;
 #endif
 	wiphy_info(hw->wiphy, "%s\n", "SSV6200 of South Silicon Valley");
 	return 0;

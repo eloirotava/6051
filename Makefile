@@ -69,17 +69,8 @@ OBJS := ssvdevice/ssvdevice.c \
 	hwif/sdio/sdio.c \
 	ssv6051-generic-wlan.c
 
-ifeq ($(findstring -DCONFIG_SSV6XXX_DEBUGFS, $(ccflags-y)), -DCONFIG_SSV6XXX_DEBUGFS)
-OBJS +=	smac/ssv6xxx_debugfs.c
-endif
 
-ifeq ($(findstring -DCONFIG_SSV_VENDOR_EXT_SUPPORT, $(ccflags-y)), -DCONFIG_SSV_VENDOR_EXT_SUPPORT)
-OBJS +=	smac/ssv_cfgvendor.c
-endif
 
-ifeq ($(findstring -DCONFIG_SSV_SMARTLINK, $(ccflags-y)), -DCONFIG_SSV_SMARTLINK)
-OBJS += smac/smartlink.c
-endif
 
 $(KMODULE_NAME)-y += $(ASMS:.S=.o)
 $(KMODULE_NAME)-y += $(OBJS:.c=.o)

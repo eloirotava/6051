@@ -147,27 +147,8 @@ static void rate_control_ht_sample(struct ssv62xx_ht *mi,
 			index = i;
 			minstrel_calc_rate_ewma(mr);
 			minstrel_ht_calc_tp(mi, rc_sta, i);
-#ifdef RATE_CONTROL_HT_PARAMETER_DEBUG
-			if (mr->cur_prob)
-				pr_debug
-				    ("rate[%d]probability[%08d]cur_prob[%08d]TP[%04d]\n",
-				     i, mr->probability, mr->cur_prob,
-				     mr->cur_tp);
-#endif
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-			pr_debug
-			    ("HT sample result max_tp_rate[%d]max_tp_rate2[%d]max_prob_rate[%d]\n",
-			     mg->max_tp_rate, mg->max_tp_rate2,
-			     mg->max_prob_rate);
-			pr_debug("rate[%d]probability[%08d]TP[%d]\n", i,
-			       mr->probability, mr->cur_tp);
-#endif
 			if (!mr->cur_tp)
 				continue;
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-			pr_debug("HT--1 mr->cur_tp[%d]cur_prob_tp[%d]\n",
-			       mr->cur_tp, cur_prob_tp);
-#endif
 			if ((mr->cur_tp > cur_prob_tp && mr->probability >
 			     MINSTREL_FRAC(3, 4))
 			    || mr->probability > cur_prob) {
@@ -175,28 +156,13 @@ static void rate_control_ht_sample(struct ssv62xx_ht *mi,
 				cur_prob = mr->probability;
 				cur_prob_tp = mr->cur_tp;
 			}
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-			pr_debug("HT--2 mr->cur_tp[%d]cur_tp[%d]\n", mr->cur_tp,
-			       cur_tp);
-#endif
 			if (mr->cur_tp > cur_tp) {
 				swap(index, mg->max_tp_rate);
 				cur_tp = mr->cur_tp;
 				mr = minstrel_get_ratestats(mi, index);
 			}
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-			if (index != i)
-				pr_debug
-				    ("HT--3 index[%d]i[%d]mg->max_tp_rate[%d]\n",
-				     index, i, mg->max_tp_rate);
-#endif
 			if (index >= mg->max_tp_rate)
 				continue;
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-			if (index != i)
-				pr_debug("HT--4 mr->cur_tp[%d]cur_tp2[%d]\n",
-				       mr->cur_tp, cur_tp2);
-#endif
 			if (mr->cur_tp > cur_tp2) {
 				mg->max_tp_rate2 = index;
 				cur_tp2 = mr->cur_tp;
@@ -207,11 +173,6 @@ static void rate_control_ht_sample(struct ssv62xx_ht *mi,
 	mi->max_tp_rate = mg->max_tp_rate;
 	mi->max_tp_rate2 = mg->max_tp_rate2;
 	mi->max_prob_rate = mg->max_prob_rate;
-#ifdef RATE_CONTROL_HT_STUPID_DEBUG
-	pr_debug
-	    ("HT sample result max_tp_rate[%d]max_tp_rate2[%d]max_prob_rate[%d]\n",
-	     mi->max_tp_rate, mi->max_tp_rate2, mi->max_prob_rate);
-#endif
 	mi->stats_update = jiffies;
 }
 
@@ -451,11 +412,6 @@ void ssv62xx_ht_rc_caps(const u16 ssv6xxx_rc_rate_set[RC_TYPE_MAX][13],
 	mi->sample_count = 16;
 	mi->sample_wait = 0;
 	mi->sample_tries = 4;
-#ifdef DISABLE_RATE_CONTROL_SAMPLE
-	mi->max_tp_rate = MCS_GROUP_RATES - 1;
-	mi->max_tp_rate2 = MCS_GROUP_RATES - 1;
-	mi->max_prob_rate = MCS_GROUP_RATES - 1;
-#endif
 #if (HW_MAX_RATE_TRIES == 7)
 	{
 		mi->first_try_count = 3;
@@ -520,16 +476,6 @@ void ssv6xxx_ht_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 		    !minstrel_ht_txstat_valid(&report_data->rates[i + 1]);
 		if (!minstrel_ht_txstat_valid(&report_data->rates[i]))
 			break;
-#ifdef RATE_CONTROL_DEBUG
-		if ((report_data->rates[i].data_rate < SSV62XX_RATE_MCS_INDEX)
-		    || (report_data->rates[i].data_rate >=
-			SSV62XX_RATE_MCS_GREENFIELD_INDEX)) {
-			dev_dbg
-			    (sc->dev, "[RC]ssv6xxx_ht_report_handler get error report rate[%d]\n",
-			     report_data->rates[i].data_rate);
-			break;
-		}
-#endif
 		rate =
 		    &mi->groups.
 		    rates[(report_data->rates[i].data_rate -

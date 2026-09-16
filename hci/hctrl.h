@@ -74,27 +74,6 @@ struct ssv6xxx_hci_ctrl {
 	u32 isr_miss_cnt;
 	unsigned long prev_isr_jiffes;
 	unsigned long prev_rx_isr_jiffes;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct dentry *debugfs_dir;
-	u32 isr_mib_enable;
-	u32 isr_mib_reset;
-	long long isr_total_time;
-	long long isr_tx_io_time;
-	long long isr_rx_io_time;
-	u32 isr_rx_io_count;
-	u32 isr_tx_io_count;
-	long long isr_rx_proc_time;
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-	bool irq_enable;
-	u32 irq_count;
-	u32 invalid_irq_count;
-	u32 tx_irq_count;
-	u32 real_tx_irq_count;
-	u32 rx_irq_count;
-	u32 irq_rx_pkt_count;
-	u32 irq_tx_pkt_count;
-#endif
-#endif
 };
 struct ssv6xxx_hci_txq_info {
 	u32 tx_use_page:8;

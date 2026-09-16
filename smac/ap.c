@@ -63,9 +63,6 @@ void ssv6xxx_beacon_reg_lock(struct ssv_softc *sc, bool block)
 {
 	u32 val;
 	val = block << MTX_BCN_PKTID_CH_LOCK_SHIFT;
-#ifdef BEACON_DEBUG
-	printk("ssv6xxx_beacon_reg_lock   val[0x:%08x]\n ", val);
-#endif
 	SMAC_REG_WRITE(sc->sh, ADR_MTX_BCN_MISC, val);
 }
 
@@ -75,10 +72,6 @@ void ssv6xxx_beacon_set_info(struct ssv_softc *sc, u8 beacon_interval,
 	u32 val;
 	if (beacon_interval == 0)
 		beacon_interval = 100;
-#ifdef BEACON_DEBUG
-	printk("[A] BSS_CHANGED_BEACON_INT beacon_int[%d] dtim_cnt[%d]\n",
-	       beacon_interval, (dtim_cnt));
-#endif
 	val =
 	    (beacon_interval << MTX_BCN_PERIOD_SHIFT) | (dtim_cnt <<
 							 MTX_DTIM_NUM_SHIFT);
@@ -107,18 +100,9 @@ bool ssv6xxx_beacon_enable(struct ssv_softc *sc, bool bEnable)
 		}
 	}
 	SMAC_REG_READ(sc->sh, ADR_MTX_BCN_EN_MISC, &regval);
-#ifdef BEACON_DEBUG
-	printk("[A] ssv6xxx_beacon_enable read misc reg val [%08x]\n", regval);
-#endif
 	regval &= MTX_BCN_ENABLE_MASK;
-#ifdef BEACON_DEBUG
-	printk("[A] ssv6xxx_beacon_enable read misc reg val [%08x]\n", regval);
-#endif
 	regval |= (bEnable << MTX_BCN_TIMER_EN_SHIFT);
 	ret = SMAC_REG_WRITE(sc->sh, ADR_MTX_BCN_EN_MISC, regval);
-#ifdef BEACON_DEBUG
-	printk("[A] ssv6xxx_beacon_enable read misc reg val [%08x]\n", regval);
-#endif
 	sc->enable_beacon = (bEnable == true) ? BEACON_ENABLED : 0;
 	return ret;
 }
@@ -131,14 +115,8 @@ int ssv6xxx_beacon_fill_content(struct ssv_softc *sc, u32 regaddr, u8 * beacon,
 	size = size / 4;
 	for (i = 0; i < size; i++) {
 		val = (u32) (*(ptr + i));
-#ifdef BEACON_DEBUG
-		printk("[%08x] ", val);
-#endif
 		SMAC_REG_WRITE(sc->sh, regaddr + i * 4, val);
 	}
-#ifdef BEACON_DEBUG
-	printk("\n");
-#endif
 	return 0;
 }
 
@@ -192,17 +170,8 @@ bool ssv6xxx_beacon_set(struct ssv_softc *sc, struct sk_buff *beacon_skb,
 	avl_bcn_type = ssv6xxx_beacon_get_valid_reg(sc);
 	if (avl_bcn_type == SSV6xxx_BEACON_1)
 		reg_tx_beacon_adr = ADR_MTX_BCN_CFG1;
-#ifdef BEACON_DEBUG
-	printk("[A] ssv6xxx_beacon_set avl_bcn_type[%d]\n", avl_bcn_type);
-#endif
 	do {
 		if (IS_BIT_SET(sc->beacon_usage, avl_bcn_type)) {
-#ifdef BEACON_DEBUG
-			printk
-			    ("[A] beacon has already been set old len[%d] new len[%d]\n",
-			     sc->beacon_info[avl_bcn_type].len,
-			     beacon_skb->len);
-#endif
 			if (sc->beacon_info[avl_bcn_type].len >=
 			    beacon_skb->len) {
 				break;
@@ -212,10 +181,6 @@ bool ssv6xxx_beacon_set(struct ssv_softc *sc, struct sk_buff *beacon_skb,
 						      sc->
 						      beacon_info[avl_bcn_type].
 						      pubf_addr)) {
-#ifdef BEACON_DEBUG
-					printk
-					    ("=============>ERROR!!Intend to allcoate beacon from ASIC fail.\n");
-#endif
 					ret = false;
 					goto out;
 				}
@@ -230,12 +195,6 @@ bool ssv6xxx_beacon_set(struct ssv_softc *sc, struct sk_buff *beacon_skb,
 			goto out;
 		}
 		SET_BIT(sc->beacon_usage, avl_bcn_type);
-#ifdef BEACON_DEBUG
-		printk
-		    ("[A] beacon type[%d] usage[%d] allocate new beacon addr[%08x] \n",
-		     avl_bcn_type, sc->beacon_usage,
-		     sc->beacon_info[avl_bcn_type].pubf_addr);
-#endif
 	} while (0);
 	ssv6xxx_beacon_fill_content(sc, sc->beacon_info[avl_bcn_type].pubf_addr,
 				    beacon_skb->data, beacon_skb->len);
@@ -243,10 +202,6 @@ bool ssv6xxx_beacon_set(struct ssv_softc *sc, struct sk_buff *beacon_skb,
 	    (PBUF_MapPkttoID(sc->beacon_info[avl_bcn_type].pubf_addr)) |
 	    (dtim_offset << MTX_DTIM_OFST0);
 	SMAC_REG_WRITE(sc->sh, reg_tx_beacon_adr, val);
-#ifdef BEACON_DEBUG
-	printk("[A] update to register reg_tx_beacon_adr[%08x] val[%08x]\n",
-	       reg_tx_beacon_adr, val);
-#endif
  out:
 	ssv6xxx_beacon_reg_lock(sc, 0);
 	if (sc->beacon_usage && (sc->enable_beacon & BEACON_WAITING_ENABLED)) {
@@ -292,9 +247,6 @@ void ssv6xxx_beacon_release(struct ssv_softc *sc)
 		dev_kfree_skb_any(sc->beacon_buf);
 		sc->beacon_buf = NULL;
 	}
-#ifdef BEACON_DEBUG
-	printk("[A] ssv6xxx_beacon_release leave\n");
-#endif
 }
 
 void ssv6xxx_beacon_change(struct ssv_softc *sc, struct ieee80211_hw *hw,
@@ -321,15 +273,7 @@ void ssv6xxx_beacon_change(struct ssv_softc *sc, struct ieee80211_hw *hw,
 			else
 				skb->data[tim_offset + 4] &= ~1;
 		}
-#ifdef BEACON_DEBUG
-		printk("[A] beacon len [%d] tim_offset[%d]\n", skb->len,
-		       tim_offset);
-#endif
 		ssv6xxx_beacon_fill_tx_desc(sc, skb);
-#ifdef BEACON_DEBUG
-		printk("[A] beacon len [%d] tim_offset[%d]\n", skb->len,
-		       tim_offset);
-#endif
 		if (sc->beacon_buf) {
 			if (memcmp
 			    (sc->beacon_buf->data, skb->data,
@@ -348,10 +292,6 @@ void ssv6xxx_beacon_change(struct ssv_softc *sc, struct ieee80211_hw *hw,
 			u8 dtim_cnt = vif->bss_conf.dtim_period - 1;
 			if (sc->beacon_dtim_cnt != dtim_cnt) {
 				sc->beacon_dtim_cnt = dtim_cnt;
-#ifdef BEACON_DEBUG
-				printk("[A] beacon_dtim_cnt [%d]\n",
-				       sc->beacon_dtim_cnt);
-#endif
 				ssv6xxx_beacon_set_info(sc, sc->beacon_interval,
 							sc->beacon_dtim_cnt);
 			}
@@ -365,13 +305,7 @@ void ssv6200_set_tim_work(struct work_struct *work)
 {
 	struct ssv_softc *sc =
 	    container_of(work, struct ssv_softc, set_tim_work);
-#ifdef BROADCAST_DEBUG
-	printk("%s() enter\n", __FUNCTION__);
-#endif
 	ssv6xxx_beacon_change(sc, sc->hw, sc->ap_vif, sc->aid0_bit_set);
-#ifdef BROADCAST_DEBUG
-	printk("%s() leave\n", __FUNCTION__);
-#endif
 }
 
 int ssv6200_bcast_queue_len(struct ssv6xxx_bcast_txq *bcast_txq)
@@ -424,9 +358,6 @@ void ssv6200_bcast_flush(struct ssv_softc *sc,
 {
 	struct sk_buff *skb;
 	unsigned long flags;
-#ifdef BCAST_DEBUG
-	printk("ssv6200_bcast_flush\n");
-#endif
 	spin_lock_irqsave(&bcast_txq->txq_lock, flags);
 	while (bcast_txq->cur_qsize > 0) {
 		skb = __skb_dequeue(&bcast_txq->qhead);
@@ -449,18 +380,7 @@ void ssv6200_bcast_tx_work(struct work_struct *work)
 	long tmo = sc->bcast_interval;
 	spin_lock_irqsave(&sc->ps_state_lock, flags);
 	do {
-#ifdef BCAST_DEBUG
-		printk
-		    ("[B] bcast_timer: hw_mng_used[%d] HCI_TXQ_EMPTY[%d] bcast_queue_len[%d].....................\n",
-		     sc->hw_mng_used, HCI_TXQ_EMPTY(sc->sh, 4),
-		     ssv6200_bcast_queue_len(&sc->bcast_txq));
-#endif
 		if (sc->hw_mng_used != 0 || false == HCI_TXQ_EMPTY(sc->sh, 4)) {
-#ifdef BCAST_DEBUG
-			printk
-			    ("HW queue still have frames insdide. skip this one hw_mng_used[%d] bEmptyTXQ4[%d]\n",
-			     sc->hw_mng_used, HCI_TXQ_EMPTY(sc->sh, 4));
-#endif
 			queue_block_cnt++;
 			if (queue_block_cnt > 5) {
 				queue_block_cnt = 0;
@@ -489,10 +409,6 @@ void ssv6200_bcast_tx_work(struct work_struct *work)
 				hdr->frame_control |=
 				    cpu_to_le16(IEEE80211_FCTL_MOREDATA);
 			}
-#ifdef BCAST_DEBUG
-			printk("[B] bcast_timer:tx remain_size[%d] i[%d]\n",
-			       remain_size, i);
-#endif
 			spin_unlock_irqrestore(&sc->ps_state_lock, flags);
 			if (HCI_SEND(sc->sh, skb, 4) < 0) {
 				printk("bcast_timer send fail!!!!!!! \n");
@@ -503,31 +419,17 @@ void ssv6200_bcast_tx_work(struct work_struct *work)
 		}
 	} while (0);
 	if (needtimer) {
-#ifdef BCAST_DEBUG
-		printk
-		    ("[B] bcast_timer:need more timer to tx bcast frame time[%d]\n",
-		     sc->bcast_interval);
-#endif
 		queue_delayed_work(sc->config_wq, &sc->bcast_tx_work, tmo);
 	} else {
-#ifdef BCAST_DEBUG
-		printk("[B] bcast_timer: ssv6200_bcast_stop\n");
-#endif
 		ssv6200_bcast_stop(sc);
 	}
 	spin_unlock_irqrestore(&sc->ps_state_lock, flags);
-#ifdef BCAST_DEBUG
-	printk("[B] bcast_timer: leave.....................\n");
-#endif
 }
 
 void ssv6200_bcast_start_work(struct work_struct *work)
 {
 	struct ssv_softc *sc =
 	    container_of(work, struct ssv_softc, bcast_start_work);
-#ifdef BCAST_DEBUG
-	printk("[B] ssv6200_bcast_start_work==\n");
-#endif
 	sc->bcast_interval = (sc->beacon_dtim_cnt + 1) *
 	    (sc->beacon_interval + 20) * HZ / 1000;
 	if (!sc->aid0_bit_set) {
@@ -535,10 +437,6 @@ void ssv6200_bcast_start_work(struct work_struct *work)
 		ssv6xxx_beacon_change(sc, sc->hw, sc->ap_vif, sc->aid0_bit_set);
 		queue_delayed_work(sc->config_wq,
 				   &sc->bcast_tx_work, sc->bcast_interval);
-#ifdef BCAST_DEBUG
-		printk("[B] bcast_start_work: Modify timer to DTIM[%d]ms==\n",
-		       (sc->beacon_dtim_cnt + 1) * (sc->beacon_interval + 20));
-#endif
 	}
 }
 
@@ -547,23 +445,13 @@ void ssv6200_bcast_stop_work(struct work_struct *work)
 	struct ssv_softc *sc =
 	    container_of(work, struct ssv_softc, bcast_stop_work.work);
 	long tmo = HZ / 100;
-#ifdef BCAST_DEBUG
-	printk("[B] ssv6200_bcast_stop_work\n");
-#endif
 	if (sc->aid0_bit_set) {
 		if (0 == ssv6200_bcast_queue_len(&sc->bcast_txq)) {
 			cancel_delayed_work_sync(&sc->bcast_tx_work);
 			sc->aid0_bit_set = false;
 			ssv6xxx_beacon_change(sc, sc->hw,
 					      sc->ap_vif, sc->aid0_bit_set);
-#ifdef BCAST_DEBUG
-			printk("remove group bit in DTIM\n");
-#endif
 		} else {
-#ifdef BCAST_DEBUG
-			printk
-			    ("bcast_stop_work: bcast queue still have data. just modify timer to 10ms\n");
-#endif
 			queue_delayed_work(sc->config_wq,
 					   &sc->bcast_tx_work, tmo);
 		}

@@ -227,9 +227,7 @@ void efuse_read_all_map(struct ssv_hw *sh)
 	u8 mac[ETH_ALEN] = { 0 };
 	int jj, kk;
 	u8 efuse_mapping_table[EFUSE_HWSET_MAX_SIZE / 8];
-#ifndef CONFIG_SSV_RANDOM_MAC
 	u8 pseudo_mac0[ETH_ALEN] = { 0x00, 0x33, 0x33, 0x33, 0x33, 0x33 };
-#endif
 	u8 rom_mac0[ETH_ALEN];
 	memset(rom_mac0, 0x00, ETH_ALEN);
 	memset(efuse_mapping_table, 0x00, EFUSE_HWSET_MAX_SIZE / 8);

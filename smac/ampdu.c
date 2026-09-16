@@ -60,11 +60,6 @@ static void void_func(const char *fmt, ...)
         sn = NEXT_PKT_SN(sn); \
         sn; \
     })
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-static ssize_t ampdu_tx_mib_dump(struct ssv_sta_priv_data *ssv_sta_priv,
-				 char *mib_str, ssize_t length);
-static int _dump_ba_skb(char *buf, int buf_size, struct sk_buff *ba_skb);
-#endif
 static struct sk_buff *_aggr_retry_mpdu(struct ssv_softc *sc,
 					struct AMPDU_TID_st *cur_AMPDU_TID,
 					struct sk_buff_head *retry_queue,
@@ -87,36 +82,6 @@ static void _queue_early_ampdu(struct ssv_softc *sc,
 			       struct AMPDU_TID_st *ampdu_tid,
 			       struct sk_buff *ampdu_skb);
 static int _mark_skb_retry(struct SKB_info_st *skb_info, struct sk_buff *skb);
-#ifdef CONFIG_DEBUG_SKB_TIMESTAMP
-unsigned int cal_duration_of_ampdu(struct sk_buff *ampdu_skb, int stage)
-{
-	unsigned int timeout;
-	SKB_info *mpdu_skb_info;
-	u16 ssn = 0;
-	struct sk_buff *mpdu = NULL;
-	struct ampdu_hdr_st *ampdu_hdr = NULL;
-	ktime_t current_ktime;
-	ampdu_hdr = (struct ampdu_hdr_st *)ampdu_skb->head;
-	ssn = ampdu_hdr->ssn[0];
-	mpdu = INDEX_PKT_BY_SSN(ampdu_hdr->ampdu_tid, ssn);
-	if (mpdu == NULL)
-		return 0;
-	mpdu_skb_info = (SKB_info *) (mpdu->head);
-	current_ktime = ktime_get();
-	timeout =
-	    (unsigned int)
-	    ktime_to_ms(ktime_sub(current_ktime, mpdu_skb_info->timestamp));
-	if (timeout > SKB_DURATION_TIMEOUT_MS) {
-		if (stage == SKB_DURATION_STAGE_TO_SDIO)
-			pr_debug("*a_to_sdio: %ums\n", timeout);
-		else if (stage == SKB_DURATION_STAGE_TX_ENQ)
-			pr_debug("*a_to_txenqueue: %ums\n", timeout);
-		else
-			pr_debug("*a_in_hwq: %ums\n", timeout);
-	}
-	return timeout;
-}
-#endif
 static u8 _cal_ampdu_delm_half_crc(u8 value)
 {
 	u32 c32 = value, v32 = value;
@@ -412,10 +377,6 @@ void ssv6200_ampdu_init(struct ieee80211_hw *hw)
 	struct ssv_softc *sc = hw->priv;
 	ssv6200_ampdu_hw_init(hw);
 	sc->tx.ampdu_tx_group_id = 0;
-#ifdef USE_ENCRYPT_WORK
-	INIT_WORK(&sc->ampdu_tx_encry_work, encry_work);
-	INIT_WORK(&sc->sync_hwkey_work, sync_hw_key_work);
-#endif
 }
 
 void ssv6200_ampdu_deinit(struct ieee80211_hw *hw)
@@ -427,235 +388,6 @@ void ssv6200_ampdu_release_skb(struct sk_buff *skb, struct ieee80211_hw *hw)
 	ieee80211_free_txskb(hw, skb);
 }
 
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-struct mib_dump_data {
-	char *prt_buff;
-	size_t buff_size;
-	size_t prt_len;
-};
-#define AMPDU_TX_MIB_SUMMARY_BUF_SIZE (4096)
-static ssize_t ampdu_tx_mib_summary_read(struct file *file,
-					 char __user * user_buf, size_t count,
-					 loff_t * ppos)
-{
-	struct ssv_sta_priv_data *ssv_sta_priv =
-	    (struct ssv_sta_priv_data *)file->private_data;
-	char *summary_buf = kzalloc(AMPDU_TX_MIB_SUMMARY_BUF_SIZE, GFP_KERNEL);
-	ssize_t summary_size;
-	ssize_t ret;
-	if (!summary_buf)
-		return -ENOMEM;
-	summary_size = ampdu_tx_mib_dump(ssv_sta_priv, summary_buf,
-					 AMPDU_TX_MIB_SUMMARY_BUF_SIZE);
-	ret = simple_read_from_buffer(user_buf, count, ppos, summary_buf,
-				      summary_size);
-	kfree(summary_buf);
-	return ret;
-}
-
-static int ampdu_tx_mib_summary_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
-static const struct file_operations mib_summary_fops = {.read =
-	    ampdu_tx_mib_summary_read,.open = ampdu_tx_mib_summary_open,
-};
-
-static ssize_t ampdu_tx_tid_window_read(struct file *file,
-					char __user * user_buf, size_t count,
-					loff_t * ppos)
-{
-	struct AMPDU_TID_st *ampdu_tid =
-	    (struct AMPDU_TID_st *)file->private_data;
-	char *summary_buf = kzalloc(AMPDU_TX_MIB_SUMMARY_BUF_SIZE, GFP_KERNEL);
-	ssize_t ret;
-	char *prn_ptr = summary_buf;
-	int prt_size;
-	int buf_size = AMPDU_TX_MIB_SUMMARY_BUF_SIZE;
-	int i;
-	struct sk_buff *ba_skb, *tmp_ba_skb;
-	if (!summary_buf)
-		return -ENOMEM;
-	prt_size = snprintf(prn_ptr, buf_size, "\nWMM_TID %d:\n"
-			    "\tWindow:", ampdu_tid->tidno);
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	for (i = 0; i < SSV_AMPDU_BA_WINDOW_SIZE; i++) {
-		struct sk_buff *skb = ampdu_tid->aggr_pkts[i];
-		if ((i % 8) == 0) {
-			prt_size = snprintf(prn_ptr, buf_size, "\n\t\t");
-			prn_ptr += prt_size;
-			buf_size -= prt_size;
-		}
-		if (skb == NULL)
-			prt_size = snprintf(prn_ptr, buf_size, " %s", "NULL ");
-		else {
-			struct SKB_info_st *skb_info =
-			    (struct SKB_info_st *)(skb->head);
-			const char status_symbol[] = { 'N',
-				'A',
-				'S',
-				'R',
-				'P',
-				'D'
-			};
-			prt_size =
-			    snprintf(prn_ptr, buf_size, " %4d%c",
-				     ampdu_skb_ssn(skb),
-				     ((skb_info->ampdu_tx_status <=
-				       AMPDU_ST_DONE)
-				      ? status_symbol[skb_info->ampdu_tx_status]
-				      : 'X'));
-		}
-		prn_ptr += prt_size;
-		buf_size -= prt_size;
-	}
-	prt_size =
-	    snprintf(prn_ptr, buf_size, "\n\tEarly aggregated #: %d\n",
-		     ampdu_tid->early_aggr_skb_num);
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	prt_size =
-	    snprintf(prn_ptr, buf_size, "\tBAW skb #: %d\n",
-		     ampdu_tid->aggr_pkt_num);
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	prt_size =
-	    snprintf(prn_ptr, buf_size, "\tBAW head: %d\n",
-		     ampdu_tid->ssv_baw_head);
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	prt_size =
-	    snprintf(prn_ptr, buf_size, "\tState: %d\n", ampdu_tid->state);
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	prt_size = snprintf(prn_ptr, buf_size, "\tBA:\n");
-	prn_ptr += prt_size;
-	buf_size -= prt_size;
-	skb_queue_walk_safe(&ampdu_tid->ba_q, ba_skb, tmp_ba_skb) {
-		prt_size = _dump_ba_skb(prn_ptr, buf_size, ba_skb);
-		prn_ptr += prt_size;
-		buf_size -= prt_size;
-	}
-	buf_size = AMPDU_TX_MIB_SUMMARY_BUF_SIZE - buf_size;
-	ret = simple_read_from_buffer(user_buf, count, ppos, summary_buf,
-				      buf_size);
-	kfree(summary_buf);
-	return ret;
-}
-
-static int ampdu_tx_tid_window_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
-static const struct file_operations tid_window_fops = {.read =
-	    ampdu_tx_tid_window_read,.open = ampdu_tx_tid_window_open,
-};
-
-static int ampdu_tx_mib_reset_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
-static ssize_t ampdu_tx_mib_reset_read(struct file *file,
-				       char __user * user_buf, size_t count,
-				       loff_t * ppos)
-{
-	char *reset_buf = kzalloc(64, GFP_KERNEL);
-	ssize_t ret;
-	u32 reset_size;
-	if (!reset_buf)
-		return -ENOMEM;
-	reset_size = snprintf(reset_buf, 63, "%d", 0);
-	ret = simple_read_from_buffer(user_buf, count, ppos, reset_buf,
-				      reset_size);
-	kfree(reset_buf);
-	return ret;
-}
-
-static ssize_t ampdu_tx_mib_reset_write(struct file *file,
-					const char __user * buffer,
-					size_t count, loff_t * pos)
-{
-	struct AMPDU_TID_st *ampdu_tid =
-	    (struct AMPDU_TID_st *)file->private_data;
-	memset(&ampdu_tid->mib, 0, sizeof(struct AMPDU_MIB_st));
-	return count;
-}
-
-static const struct file_operations mib_reset_fops
-    = {.read = ampdu_tx_mib_reset_read,
-	.open = ampdu_tx_mib_reset_open,
-	.write = ampdu_tx_mib_reset_write
-};
-
-static void ssv6200_ampdu_tx_init_debugfs(struct ssv_softc *sc,
-					  struct ssv_sta_priv_data
-					  *ssv_sta_priv)
-{
-	struct ssv_sta_info *sta_info = ssv_sta_priv->sta_info;
-	int i;
-	struct dentry *sta_debugfs_dir = sta_info->debugfs_dir;
-	dev_info(sc->dev, "Creating AMPDU TX debugfs.\n");
-	if (sta_debugfs_dir == NULL) {
-		dev_err(sc->dev, "No STA debugfs.\n");
-		return;
-	}
-	debugfs_create_file("ampdu_tx_summary", 00444, sta_debugfs_dir,
-			    ssv_sta_priv, &mib_summary_fops);
-	debugfs_create_u32("total_BA", 00644, sta_debugfs_dir,
-			   &ssv_sta_priv->ampdu_mib_total_BA_counter);
-	for (i = 0; i < WMM_TID_NUM; i++) {
-		char debugfs_name[20];
-		struct dentry *ampdu_tx_debugfs_dir;
-		int j;
-		struct AMPDU_TID_st *ampdu_tid = &ssv_sta_priv->ampdu_tid[i];
-		struct AMPDU_MIB_st *ampdu_mib = &ampdu_tid->mib;
-		snprintf(debugfs_name, sizeof(debugfs_name), "ampdu_tx_%d", i);
-		ampdu_tx_debugfs_dir = debugfs_create_dir(debugfs_name,
-							  sta_debugfs_dir);
-		if (ampdu_tx_debugfs_dir == NULL) {
-			dev_err(sc->dev,
-				"Failed to create debugfs for AMPDU TX TID %d: %s\n",
-				i, debugfs_name);
-			continue;
-		}
-		ssv_sta_priv->ampdu_tid[i].debugfs_dir = ampdu_tx_debugfs_dir;
-		debugfs_create_file("baw_status", 00444, ampdu_tx_debugfs_dir,
-				    ampdu_tid, &tid_window_fops);
-		debugfs_create_file("reset", 00644, ampdu_tx_debugfs_dir,
-				    ampdu_tid, &mib_reset_fops);
-		debugfs_create_u32("total", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_ampdu_counter);
-		debugfs_create_u32("retry", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_retry_counter);
-		debugfs_create_u32("aggr_retry", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_aggr_retry_counter);
-		debugfs_create_u32("BAR", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_bar_counter);
-		debugfs_create_u32("Discarded", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_discard_counter);
-		debugfs_create_u32("BA", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_BA_counter);
-		debugfs_create_u32("Pass", 00444, ampdu_tx_debugfs_dir,
-				   &ampdu_mib->ampdu_mib_pass_counter);
-		for (j = 0; j <= SSV_AMPDU_aggr_num_max; j++) {
-			char dist_dbg_name[10];
-			snprintf(dist_dbg_name, sizeof(dist_dbg_name),
-				 "aggr_%d", j);
-			debugfs_create_u32(dist_dbg_name, 00444,
-					   ampdu_tx_debugfs_dir,
-					   &ampdu_mib->ampdu_mib_dist[j]);
-		}
-		skb_queue_head_init(&ssv_sta_priv->ampdu_tid[i].ba_q);
-	}
-}
-#endif
 void ssv6200_ampdu_tx_add_sta(struct ieee80211_hw *hw,
 			      struct ieee80211_sta *sta)
 {
@@ -671,9 +403,6 @@ void ssv6200_ampdu_tx_add_sta(struct ieee80211_hw *hw,
 			       ampdu_skb_tx_queue_lock);
 		spin_lock_init(&ssv_sta_priv->ampdu_tid[temp_i].pkt_array_lock);
 	}
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	ssv6200_ampdu_tx_init_debugfs(sc, ssv_sta_priv);
-#endif
 }
 
 void ssv6200_ampdu_tx_start(u16 tid, struct ieee80211_sta *sta,
@@ -686,23 +415,6 @@ void ssv6200_ampdu_tx_start(u16 tid, struct ieee80211_sta *sta,
 	ssv_sta_priv = (struct ssv_sta_priv_data *)sta->drv_priv;
 	ampdu_tid = &ssv_sta_priv->ampdu_tid[tid];
 	ampdu_tid->ssv_baw_head = SSV_ILLEGAL_SN;
-#ifdef DEBUG_AMPDU_FLUSH
-	pr_debug("Adding %02X-%02X-%02X-%02X-%02X-%02X TID %d (%p).\n",
-	       sta->addr[0], sta->addr[1], sta->addr[2],
-	       sta->addr[3], sta->addr[4], sta->addr[5],
-	       ampdu_tid->tidno, ampdu_tid);
-	{
-		int j;
-		for (j = 0; j <= MAX_TID; j++) {
-			if (sc->tid[j] == 0)
-				break;
-		}
-		if (j == MAX_TID) {
-			dev_err(sc->dev, "No room for new TID.\n");
-		} else
-			sc->tid[j] = ampdu_tid;
-	}
-#endif
 	list_add_tail_rcu(&ampdu_tid->list, &sc->tx.ampdu_tx_que);
 	skb_queue_head_init(&ampdu_tid->ampdu_skb_tx_queue);
 	skb_queue_head_init(&ampdu_tid->early_aggr_ampdu_q);
@@ -724,9 +436,6 @@ void ssv6200_ampdu_tx_start(u16 tid, struct ieee80211_sta *sta,
 	memset(&ssv_sta_priv->ampdu_tid[tid].mib, 0,
 	       sizeof(struct AMPDU_MIB_st));
 	ssv_sta_priv->ampdu_tid[tid].state = AMPDU_STATE_START;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	skb_queue_head_init(&ssv_sta_priv->ampdu_tid[tid].ba_q);
-#endif
 }
 
 void ssv6200_ampdu_tx_operation(u16 tid, struct ieee80211_sta *sta,
@@ -775,25 +484,6 @@ void ssv6200_ampdu_tx_stop(u16 tid, struct ieee80211_sta *sta,
 	ssv_sta_priv->ampdu_tid[tid].state = AMPDU_STATE_STOP;
 	dev_dbg(sc->dev, "ssv6200_ampdu_tx_stop\n");
 	if (!list_empty(&sc->tx.ampdu_tx_que)) {
-#ifdef DEBUG_AMPDU_FLUSH
-		{
-			int j;
-			struct AMPDU_TID_st *ampdu_tid =
-			    &ssv_sta_priv->ampdu_tid[tid];
-			for (j = 0; j <= MAX_TID; j++) {
-				if (sc->tid[j] == ampdu_tid)
-					break;
-			}
-			if (j == MAX_TID) {
-				dev_dbg(sc->dev, "No TID found when deleting it.\n");
-			} else
-				sc->tid[j] = NULL;
-			dev_dbg(sc->dev, "Deleting %02X-%02X-%02X-%02X-%02X-%02X TID %d (%p).\n",
-			       sta->addr[0], sta->addr[1], sta->addr[2],
-			       sta->addr[3], sta->addr[4], sta->addr[5],
-			       ampdu_tid->tidno, ampdu_tid);
-		}
-#endif
 		list_del_rcu(&ssv_sta_priv->ampdu_tid[tid].list);
 	}
 	dev_dbg(sc->dev, "clear tx q len=%d\n",
@@ -803,14 +493,6 @@ void ssv6200_ampdu_tx_stop(u16 tid, struct ieee80211_sta *sta,
 	dev_dbg(sc->dev, "clear retry q len=%d\n",
 	       skb_queue_len(&ssv_sta_priv->ampdu_tid[tid].retry_queue));
 	_clear_mpdu_q(sc->hw, &ssv_sta_priv->ampdu_tid[tid].retry_queue, true);
-#ifdef USE_ENCRYPT_WORK
-	dev_dbg(sc->dev, "clear encrypt q len=%d\n",
-	       skb_queue_len(&ssv_sta_priv->ampdu_tid[tid].
-			     ampdu_skb_wait_encry_queue));
-	_clear_mpdu_q(sc->hw,
-		      &ssv_sta_priv->ampdu_tid[tid].ampdu_skb_wait_encry_queue,
-		      false);
-#endif
 	if (ssv_sta_priv->ampdu_tid[tid].cur_ampdu_pkt != NULL) {
 		dev_kfree_skb_any(ssv_sta_priv->ampdu_tid[tid].cur_ampdu_pkt);
 		ssv_sta_priv->ampdu_tid[tid].cur_ampdu_pkt = NULL;
@@ -1161,19 +843,6 @@ u32 ssv6xxx_ampdu_flush(struct ieee80211_hw *hw)
 		list_for_each_entry_rcu(cur_AMPDU_TID, &sc->tx.ampdu_tx_que,
 					list) {
 			tid_idx++;
-#ifdef DEBUG_AMPDU_FLUSH
-			{
-				int i = 0;
-				for (i = 0; i < MAX_TID; i++)
-					if (sc->tid[i] == cur_AMPDU_TID)
-						break;
-				if (i == MAX_TID) {
-					dev_err(sc->dev, "No matching TID (%d) found! %p\n",
-					       tid_idx, cur_AMPDU_TID);
-					continue;
-				}
-			}
-#endif
 			if (cur_AMPDU_TID->state != AMPDU_STATE_OPERATION) {
 				struct ieee80211_sta *sta = cur_AMPDU_TID->sta;
 				struct ssv_sta_priv_data *sta_priv =
@@ -1531,11 +1200,7 @@ static void _flush_release_queue(struct ieee80211_hw *hw,
 #ifdef REPORT_TX_STATUS_DIRECTLY
 		dev_kfree_skb_any(ampdu_skb);
 #else
-#if defined(USE_THREAD_RX) && !defined(IRQ_PROC_TX_DATA)
-		ieee80211_tx_status_ni(hw, ampdu_skb);
-#else
 		ieee80211_tx_status_irqsafe(hw, ampdu_skb);
-#endif
 #endif
 	} while (1);
 }
@@ -1683,21 +1348,6 @@ void ssv6200_ampdu_BA_handler(struct ieee80211_hw *hw, struct sk_buff *skb)
 	aggr_num =
 	    _ba_map_walker(&(ssv_sta_priv->ampdu_tid[tid_no]), ssn, sn_bit_map,
 			   ba_notification, &acked_num);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	if (ssv_sta_priv->ampdu_tid[tid_no].debugfs_dir) {
-		struct sk_buff *dup_skb;
-		if (skb_queue_len(&ssv_sta_priv->ampdu_tid[tid_no].ba_q) > 24) {
-			struct sk_buff *ba_skb =
-			    skb_dequeue(&ssv_sta_priv->ampdu_tid[tid_no].ba_q);
-			if (ba_skb)
-				dev_kfree_skb_any(ba_skb);
-		}
-		dup_skb = skb_clone(skb, GFP_ATOMIC);
-		if (dup_skb)
-			skb_queue_tail(&ssv_sta_priv->ampdu_tid[tid_no].ba_q,
-				       dup_skb);
-	}
-#endif
 	skb_trim(skb, skb->len - sizeof(struct ampdu_ba_notify_data));
 	host_evt = (HDR_HostEvent *) skb->data;
 	host_evt->h_event = SOC_EVT_RC_AMPDU_REPORT;
@@ -1707,26 +1357,6 @@ void ssv6200_ampdu_BA_handler(struct ieee80211_hw *hw, struct sk_buff *skb)
 	       sizeof(struct firmware_rate_control_report_data));
 	report_data->ampdu_len = aggr_num;
 	report_data->ampdu_ack_len = acked_num;
-#ifdef RATE_CONTROL_HT_PERCENTAGE_TRACE
-	if ((acked_num) && (acked_num != aggr_num)) {
-		int i;
-		for (i = 0; i < SSV62XX_TX_MAX_RATES; i++) {
-			if (report_data->rates[i].data_rate == -1)
-				break;
-			if (report_data->rates[i].count == 0)
-                dev_err(sc->dev, "illegal HT report\n");
-
-			dev_dbg(sc->dev, "i=[%d] rate[%d] count[%d]\n", i,
-			       report_data->rates[i].data_rate,
-			       report_data->rates[i].count);
-		}
-		dev_dbg(sc->dev, "AMPDU percentage = %d%% \n",
-		       acked_num * 100 / aggr_num);
-	} else if (acked_num == 0) {
-		dev_dbg(sc->dev, "AMPDU percentage = 0%% aggr_num=%d acked_num=%d\n",
-		       aggr_num, acked_num);
-	}
-#endif
 	skb_queue_tail(&sc->rc_report_queue, skb);
 	if (sc->rc_sample_sechedule == 0)
 		queue_work(sc->rc_sample_workqueue, &sc->rc_sample_work);
@@ -1820,159 +1450,6 @@ void ssv6xxx_ampdu_mib_reset(struct ieee80211_hw *hw)
 	ssv6xxx_foreach_sta(sc, _reset_ampdu_mib, NULL);
 }
 
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-ssize_t ampdu_tx_mib_dump(struct ssv_sta_priv_data *ssv_sta_priv,
-			  char *mib_str, ssize_t length)
-{
-	ssize_t buf_size = length;
-	ssize_t prt_size;
-	int j;
-	struct ssv_sta_info *ssv_sta = ssv_sta_priv->sta_info;
-	if (ssv_sta->sta == NULL) {
-		prt_size = snprintf(mib_str, buf_size, "\n    NULL STA.\n");
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		goto mib_dump_exit;
-	}
-	for (j = 0; j < WMM_TID_NUM; j++) {
-		int k;
-		struct AMPDU_TID_st *ampdu_tid = &ssv_sta_priv->ampdu_tid[j];
-		struct AMPDU_MIB_st *ampdu_mib = &ampdu_tid->mib;
-		prt_size =
-		    snprintf(mib_str, buf_size, "\n    WMM_TID %d@%d\n", j,
-			     ampdu_tid->state);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		if (ampdu_tid->state != AMPDU_STATE_OPERATION)
-			continue;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        BA window size: %d\n",
-			     ampdu_tid->ssv_baw_size);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        BA window head: %d\n",
-			     ampdu_tid->ssv_baw_head);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        Sending aggregated #: %d\n",
-				    ampdu_tid->aggr_pkt_num);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        Waiting #: %d\n",
-			     skb_queue_len(&ampdu_tid->ampdu_skb_tx_queue));
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        Early aggregated %d\n",
-			     ampdu_tid->early_aggr_skb_num);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        MPDU: %d\n",
-				    ampdu_mib->ampdu_mib_mpdu_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        Passed: %d\n",
-				    ampdu_mib->ampdu_mib_pass_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        Retry: %d\n",
-				    ampdu_mib->ampdu_mib_retry_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        AMPDU: %d\n",
-				    ampdu_mib->ampdu_mib_ampdu_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        Retry AMPDU: %d\n",
-				    ampdu_mib->ampdu_mib_aggr_retry_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        BAR count: %d\n",
-				    ampdu_mib->ampdu_mib_bar_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        Discard count: %d\n",
-				    ampdu_mib->ampdu_mib_discard_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size = snprintf(mib_str, buf_size,
-				    "        BA count: %d\n",
-				    ampdu_mib->ampdu_mib_BA_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        Total BA count: %d\n",
-			     ssv_sta_priv->ampdu_mib_total_BA_counter);
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		prt_size =
-		    snprintf(mib_str, buf_size, "        Aggr # count:\n");
-		mib_str += prt_size;
-		buf_size -= prt_size;
-		for (k = 0; k <= SSV_AMPDU_aggr_num_max; k++) {
-			prt_size =
-			    snprintf(mib_str, buf_size, "            %d: %d\n",
-				     k, ampdu_mib->ampdu_mib_dist[k]);
-			mib_str += prt_size;
-			buf_size -= prt_size;
-		}
-	}
- mib_dump_exit:
-	return (length - buf_size);
-}
-
-static void _dump_ampdu_mib(struct ssv_softc *sc, struct ssv_sta_info *sta_info,
-			    void *param)
-{
-	struct mib_dump_data *dump_data = (struct mib_dump_data *)param;
-	struct ieee80211_sta *sta;
-	struct ssv_sta_priv_data *ssv_sta_priv;
-	ssize_t buf_size;
-	ssize_t prt_size;
-	char *mib_str = dump_data->prt_buff;
-	if (param == NULL)
-		return;
-	buf_size = dump_data->buff_size - 1;
-	sta = sta_info->sta;
-	if ((sta == NULL) || ((sta_info->s_flags & STA_FLAG_VALID) == 0))
-		return;
-	prt_size = snprintf(mib_str, buf_size,
-			    "STA: %02X-%02X-%02X-%02X-%02X-%02X:\n",
-			    sta->addr[0], sta->addr[1], sta->addr[2],
-			    sta->addr[3], sta->addr[4], sta->addr[5]);
-	mib_str += prt_size;
-	buf_size -= prt_size;
-	ssv_sta_priv = (struct ssv_sta_priv_data *)sta->drv_priv;
-	prt_size = ampdu_tx_mib_dump(ssv_sta_priv, mib_str, buf_size);
-	mib_str += prt_size;
-	buf_size -= prt_size;
-	dump_data->prt_len = (dump_data->buff_size - 1 - buf_size);
-	dump_data->prt_buff = mib_str;
-	dump_data->buff_size = buf_size;
-}
-
-ssize_t ssv6xxx_ampdu_mib_dump(struct ieee80211_hw *hw, char *mib_str,
-			       ssize_t length)
-{
-	struct ssv_softc *sc = hw->priv;
-	ssize_t buf_size = length - 1;
-	struct mib_dump_data dump_data = { mib_str, buf_size, 0 };
-	if (sc == NULL)
-		return 0;
-	ssv6xxx_foreach_sta(sc, _dump_ampdu_mib, &dump_data);
-	return dump_data.prt_len;
-}
-#endif
 struct sk_buff *_alloc_ampdu_skb(struct ssv_softc *sc,
 				 struct AMPDU_TID_st *ampdu_tid, u32 len)
 {

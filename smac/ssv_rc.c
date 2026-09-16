@@ -394,16 +394,6 @@ static u8 ssv6xxx_rate_lowest_index(struct ssv_sta_rc_info *rc_sta)
 	return 0;
 }
 
-#ifdef DISABLE_RATE_CONTROL_SAMPLE
-static u8 ssv6xxx_rate_highest_index(struct ssv_sta_rc_info *rc_sta)
-{
-	int i;
-	for (i = rc_sta->rc_num_rate - 1; i >= 0; i--)
-		if (ssv6xxx_rate_supported(rc_sta, i))
-			return i;
-	return 0;
-}
-#endif
 static void rate_control_pid_adjust_rate(struct ssv_sta_rc_info *rc_sta,
 					 struct rc_pid_sta_info *spinfo,
 					 int adj, struct rc_pid_rateinfo *rinfo)
@@ -443,10 +433,6 @@ static void rate_control_pid_adjust_rate(struct ssv_sta_rc_info *rc_sta,
 	spinfo->oldrate = spinfo->txrate_idx;
 	if (spinfo->tmp_rate_idx != spinfo->txrate_idx) {
 		spinfo->monitoring = 1;
-#ifdef RATE_CONTROL_PARAMETER_DEBUG
-		pr_debug("Trigger monitor tmp_rate_idx=[%d]\n",
-		       spinfo->tmp_rate_idx);
-#endif
 		spinfo->probe_cnt = MAXPROBES;
 	}
 }
@@ -466,9 +452,6 @@ static void rate_control_pid_normalize(struct rc_pid_info *pinfo, int l)
 			r[i + 1].diff += norm_offset;
 }
 
-#ifdef RATE_CONTROL_DEBUG
-unsigned int txrate_dlr = 0;
-#endif
 static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 				    struct rc_pid_info *pinfo,
 				    struct ssv_sta_rc_info *rc_sta,
@@ -550,15 +533,6 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 							rc_table->arith_shift <<
 							1);
 			if (adj) {
-#ifdef RATE_CONTROL_PARAMETER_DEBUG
-				if ((spinfo->txrate_idx != 11)
-				    || ((spinfo->txrate_idx == 11)
-					&& (adj < 0)))
-					pr_debug
-					    ("[RC]Probe adjust[%d] dlr[%d%%] this_thp[%d] ewma_thp[%d] index[%d]\n",
-					     adj, dlr, this_thp, ewma_thp,
-					     spinfo->txrate_idx);
-#endif
 				rate_control_pid_adjust_rate(rc_sta, spinfo,
 							     adj, rinfo);
 			}
@@ -572,11 +546,6 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 				dlr =
 				    100 -
 				    rate->this_fail * 100 / rate->this_attempt;
-#ifdef RATE_CONTROL_DEBUG
-#ifdef PROBE
-				txrate_dlr = dlr;
-#endif
-#endif
 				spinfo->last_dlr = dlr;
 				perfect_time = rate->perfect_tx_time;
 				if (!perfect_time)
@@ -596,11 +565,6 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 				rate->this_success = 0;
 				rate->this_attempt = 0;
 			} else {
-#ifdef RATE_CONTROL_DEBUG
-#ifdef PROBE
-				txrate_dlr = 0;
-#endif
-#endif
 			}
 			rate = &pinfo->rinfo[spinfo->tmp_rate_idx];
 			if (rate->this_attempt > 0) {
@@ -628,33 +592,9 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 					    pinfo->rinfo[spinfo->
 							 txrate_idx].throughput)
 					{
-#ifdef RATE_CONTROL_PARAMETER_DEBUG
-						pr_debug
-						    ("[RC]UPDATE probe rate idx[%d] [%d][%d%%] Old idx[%d] [%d][%d%%] feedback[%d] \n",
-						     spinfo->tmp_rate_idx,
-						     rate->throughput, dlr,
-						     spinfo->txrate_idx,
-						     pinfo->
-						     rinfo
-						     [spinfo->txrate_idx].throughput,
-						     txrate_dlr,
-						     spinfo->feedback_probes);
-#endif
 						spinfo->txrate_idx =
 						    spinfo->tmp_rate_idx;
 					} else {
-#ifdef RATE_CONTROL_PARAMETER_DEBUG
-						pr_debug
-						    ("[RC]Fail probe rate idx[%d] [%d][%d%%] Old idx[%d] [%d][%d%%] feedback[%d] \n",
-						     spinfo->tmp_rate_idx,
-						     rate->throughput, dlr,
-						     spinfo->txrate_idx,
-						     pinfo->
-						     rinfo
-						     [spinfo->txrate_idx].throughput,
-						     txrate_dlr,
-						     spinfo->feedback_probes);
-#endif
 						;
 					}
 					rate->attempt += rate->this_attempt;
@@ -666,36 +606,14 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 					spinfo->oldrate = spinfo->txrate_idx;
 				}
 			}
-#ifdef RATE_CONTROL_DEBUG
-			else
-				pr_err("Unexpected error\n");
-#endif
 			spinfo->feedback_probes = 0;
 			spinfo->tx_num_xmit = 0;
 			spinfo->tx_num_failed = 0;
 			spinfo->monitoring = 0;
-#ifdef RATE_CONTROL_PARAMETER_DEBUG
-			pr_debug("Disable monitor\n");
-#endif
 			spinfo->probe_report_flag = 0;
 			spinfo->probe_wating_times = 0;
 		} else {
 			spinfo->probe_wating_times++;
-#ifdef RATE_CONTROL_DEBUG
-			if (spinfo->probe_wating_times > 3) {
-				pr_debug
-				    ("[RC]@@@@@ PROBE LOSE @@@@@ feedback=[%d] need=[%d] probe_cnt=[%d] wating times[%d]\n",
-				     spinfo->feedback_probes, MAXPROBES,
-				     spinfo->probe_cnt,
-				     spinfo->probe_wating_times);
-				spinfo->feedback_probes = 0;
-				spinfo->tx_num_xmit = 0;
-				spinfo->tx_num_failed = 0;
-				spinfo->monitoring = 0;
-				spinfo->probe_report_flag = 0;
-				spinfo->probe_wating_times = 0;
-			}
-#else
 			if (spinfo->probe_wating_times > 3) {
 				spinfo->feedback_probes = 0;
 				spinfo->tx_num_xmit = 0;
@@ -704,15 +622,10 @@ static void rate_control_pid_sample(struct ssv_rate_ctrl *ssv_rc,
 				spinfo->probe_report_flag = 0;
 				spinfo->probe_wating_times = 0;
 			}
-#endif
 		}
 	}
 }
 
-#ifdef RATE_CONTROL_PERCENTAGE_TRACE
-int percentage = 0;
-int percentageCounter = 0;
-#endif
 void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 				   struct ssv_sta_rc_info *rc_sta)
 {
@@ -745,10 +658,6 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 				spinfo->txrate_idx = rc_sta->ht.max_tp_rate + 4;
 			else
 				spinfo->txrate_idx = rc_sta->ht.max_tp_rate;
-#ifdef RATE_CONTROL_DEBUG
-			pr_debug("MPDU rate update time txrate_idx[%d]!!\n",
-			       spinfo->txrate_idx);
-#endif
 			spinfo->last_sample = jiffies;
 		}
 		return;
@@ -802,17 +711,6 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 	}
 	if ((report_data_index != spinfo->tmp_rate_idx)
 	    && (report_data_index != spinfo->txrate_idx)) {
-#ifdef RATE_CONTROL_DEBUG
-		dev_dbg
-		    (sc->dev, "Rate control report mismatch report_rate_idx[%d] tmp_rate_idx[%d]rate[%d] txrate_idx[%d]rate[%d]!!\n",
-		     report_data->rates[0].data_rate, spinfo->tmp_rate_idx,
-		     ssv_rc->rc_table[rc_sta->pinfo.
-				      rinfo[spinfo->tmp_rate_idx].rc_index].
-		     hw_rate_idx, spinfo->txrate_idx,
-		     ssv_rc->rc_table[rc_sta->pinfo.
-				      rinfo[spinfo->txrate_idx].rc_index].
-		     hw_rate_idx);
-#endif
 		return;
 	}
 	if (report_data_index == spinfo->txrate_idx) {
@@ -836,47 +734,6 @@ void ssv6xxx_legacy_report_handler(struct ssv_softc *sc, struct sk_buff *skb,
 	}
 	period = msecs_to_jiffies(RC_PID_INTERVAL);
 	if (time_after(jiffies, spinfo->last_sample + period)) {
-#ifdef RATE_CONTROL_PERCENTAGE_TRACE
-		rate = &pidrate[spinfo->txrate_idx];
-		if (rate->this_success > rate->this_attempt) {
-			dev_dbg(sc->dev, "this_success[%ld] this_attempt[%ld]\n",
-			       rate->this_success, rate->this_attempt);
-		} else {
-			if (percentage == 0)
-				percentage =
-				    (int)((rate->this_success * 100) /
-					  rate->this_attempt);
-			else
-				percentage =
-				    (percentage +
-				     (int)((rate->this_success * 100) /
-					   rate->this_attempt)) / 2;
-			deb_dbg(sc->dev, "Percentage[%d]\n", percentage);
-			if ((percentageCounter % 16) == 1)
-				percentage = 0;
-		}
-#endif
-#ifdef RATE_CONTROL_STUPID_DEBUG
-		if (spinfo->txrate_idx != spinfo->tmp_rate_idx) {
-			rate = &pidrate[spinfo->tmp_rate_idx];
-			if (spinfo->monitoring && ((rate->this_attempt == 0)
-						   || (rate->this_attempt !=
-						       MAXPROBES))) {
-				dev_dbg(sc->dev, "Probe result a[%ld]s[%ld]f[%ld]",
-				       rate->this_attempt, rate->this_success,
-				       rate->this_fail);
-			}
-			rate = &pidrate[spinfo->txrate_idx];
-			dev_dbg(sc->dev, "New a[%ld]s[%ld]f[%ld] \n", rate->this_attempt,
-			       rate->this_success, rate->this_fail);
-		} else {
-			rate = &pidrate[spinfo->txrate_idx];
-			dev_dbg(sc->dev, "New a[%ld]s[%ld]f[%ld] \n", rate->this_attempt,
-			       rate->this_success, rate->this_fail);
-		}
-		dev_dbg(sc->dev, "w[%d]x%03d-f%03d\n", rc_sta->rc_wsid,
-		       spinfo->tx_num_xmit, spinfo->tx_num_failed);
-#endif
 		rate_control_pid_sample(sc->rc, pinfo, rc_sta, spinfo);
 	}
 }
@@ -897,12 +754,6 @@ void ssv6xxx_sample_work(struct work_struct *work)
 		skb = skb_dequeue(&sc->rc_report_queue);
 		if (skb == NULL)
 			break;
-#ifdef DISABLE_RATE_CONTROL_SAMPLE
-		{
-			dev_kfree_skb_any(skb);
-			continue;
-		}
-#endif
 		host_event = (struct cfg_host_event *)skb->data;
 		if ((host_event->h_event == SOC_EVT_RC_AMPDU_REPORT)
 		    || (host_event->h_event == SOC_EVT_RC_MPDU_REPORT)) {
@@ -916,9 +767,6 @@ void ssv6xxx_sample_work(struct work_struct *work)
 			continue;
 		}
 		if (hw_wsid >= SSV_RC_MAX_HARDWARE_SUPPORT) {
-#ifdef RATE_CONTROL_DEBUG
-			dev_dbg(sc->dev, "[RC]rc_sta is NULL pointer Check-0!!\n");
-#endif
 			dev_kfree_skb_any(skb);
 			continue;
 		}
@@ -942,9 +790,6 @@ void ssv6xxx_sample_work(struct work_struct *work)
 			continue;
 		}
 		if (rc_sta == NULL) {
-#ifdef RATE_CONTROL_DEBUG
-			dev_dbg(sc->dev, "[RC]rc_sta is NULL pointer Check-2!!\n");
-#endif
 			dev_kfree_skb_any(skb);
 			continue;
 		}
@@ -1168,17 +1013,10 @@ static void ssv6xxx_get_rate(void *priv, struct ieee80211_sta *sta,
 					}
 				} else {
 					if (rc_sta->is_ht) {
-#ifdef DISABLE_RATE_CONTROL_SAMPLE
-						rateidx =
-						    rc_sta->ht.
-						    groups.rates[MCS_GROUP_RATES
-								 - 1].rc_index;
-#else
 						rateidx =
 						    rc_sta->pinfo.
 						    rinfo
 						    [spinfo->txrate_idx].rc_index;
-#endif
 					} else {
 						{
 							if (unlikely(spinfo->txrate_idx >=
@@ -1290,9 +1128,6 @@ static void ssv62xx_rc_caps(struct ssv_sta_rc_info *rc_sta)
 			spinfo->txrate_idx = 0;
 	} else {
 		spinfo->txrate_idx = ssv6xxx_rate_lowest_index(rc_sta);
-#ifdef DISABLE_RATE_CONTROL_SAMPLE
-		spinfo->txrate_idx = ssv6xxx_rate_highest_index(rc_sta);
-#endif
 	}
 	spinfo->real_hw_index = 0;
 	spinfo->probe_cnt = MAXPROBES;
@@ -1322,7 +1157,6 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 	rc_sta->ht_supp_rates = 0;
 	rc_sta->rc_supp_rates = 0;
 	rc_sta->is_ht = 0;
-#ifndef CONFIG_CH14_SUPPORT_GN_MODE
 	if (sc->cur_channel->hw_value == 14) {
 		dev_dbg(sc->dev, "[RC init ]Channel 14 support\n");
 		if ((0 & (~0xfL)) == 0x0) {
@@ -1333,7 +1167,6 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 			rc_sta->rc_type = RC_TYPE_LEGACY_GB;
 		}
 	} else
-#endif
 	if (ht_cap->ht_supported && (sh->cfg.hw_caps & SSV6200_HW_CAP_HT)) {
 		dev_dbg(sc->dev, "[RC init ]HT support wsid\n");
 		/* 1x1 radio: only MCS 0-7 */
@@ -1363,17 +1196,6 @@ static void ssv6xxx_rate_update_rc_type(void *priv,
 			dev_dbg(sc->dev, "[RC init ]legacy G mode\n");
 		}
 	}
-#ifdef CONFIG_SSV_DPD
-	if (rc_sta->rc_type == RC_TYPE_B_ONLY) {
-		SMAC_REG_WRITE(sh, ADR_TX_FE_REGISTER, 0x3D3E84FE);
-		SMAC_REG_WRITE(sh, ADR_RX_FE_REGISTER_1, 0x1457D79);
-		SMAC_REG_WRITE(sh, ADR_DPD_CONTROL, 0x0);
-	} else {
-		SMAC_REG_WRITE(sh, ADR_TX_FE_REGISTER, 0x3CBE84FE);
-		SMAC_REG_WRITE(sh, ADR_RX_FE_REGISTER_1, 0x4507F9);
-		SMAC_REG_WRITE(sh, ADR_DPD_CONTROL, 0x3);
-	}
-#endif
 	if ((rc_sta->rc_type != RC_TYPE_B_ONLY)
 	    && (rc_sta->rc_type != RC_TYPE_LEGACY_GB)) {
 		if (ht_cap->ampdu_factor
@@ -1435,7 +1257,6 @@ static void *ssv6xxx_rate_alloc_sta(void *priv, struct ieee80211_sta *sta,
 {
 	struct ssv_sta_priv_data *sta_priv =
 	    (struct ssv_sta_priv_data *)sta->drv_priv;
-#ifndef RC_STA_DIRECT_MAP
 	struct ssv_softc *sc = priv;
 	struct ssv_rate_ctrl *ssv_rc = sc->rc;
 	int s;
@@ -1452,10 +1273,6 @@ static void *ssv6xxx_rate_alloc_sta(void *priv, struct ieee80211_sta *sta,
 		}
 	}
 	return NULL;
-#else
-	sta_priv->rc_idx = (-1);
-	return sta_priv;
-#endif
 }
 
 static void ssv6xxx_rate_free_sta(void *priv, struct ieee80211_sta *sta,
@@ -1608,23 +1425,13 @@ u8 ssv6xxx_rc_hw_rate_update_check(struct sk_buff *skb, struct ssv_softc *sc,
 		return ret;
 	sta_priv = (struct ssv_sta_priv_data *)sta->drv_priv;
 	if (sta_priv == NULL) {
-#ifdef RATE_CONTROL_DEBUG
-		dev_dbg(rc->dev, "%s sta_priv == NULL \n\r", __FUNCTION__);
-#endif
 		return ret;
 	}
 	if ((sta_priv->rc_idx < 0) || (sta_priv->rc_idx >= SSV_RC_MAX_STA)) {
-#ifdef RATE_CONTROL_DEBUG
-		dev_dbg(sc->dev, "%s rc_idx %x illegal \n\r", __FUNCTION__,
-		       sta_priv->rc_idx);
-#endif
 		return ret;
 	}
 	rc_sta = &ssv_rc->sta_rc_info[sta_priv->rc_idx];
 	if (rc_sta->rc_valid == false) {
-#ifdef RATE_CONTROL_DEBUG
-		dev_dbg(sc->dev, "%s rc_valid false \n\r", __FUNCTION__);
-#endif
 		return ret;
 	}
 	spinfo = &rc_sta->spinfo;
@@ -1660,13 +1467,6 @@ u8 ssv6xxx_rc_hw_rate_update_check(struct sk_buff *skb, struct ssv_softc *sc,
 		return 0;
 	}
 	rc_rate = &ssv_rc->rc_table[rateidx];
-#ifdef RATE_CONTROL_STUPID_DEBUG
-	if (spinfo->monitoring && (spinfo->probe_cnt)) {
-		char string[24];
-		rateControlGetRate(rc_rate->hw_rate_idx, string);
-		dev_dbg(sc->dev, "[RC]Probe rate[%s]\n", string);
-	}
-#endif
 	if (rc_rate == NULL)
 		return ret;
 	if (rc_rate->hw_rate_idx != rates[SSV_DRATE_IDX].count) {

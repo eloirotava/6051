@@ -422,33 +422,17 @@ void ssv6xxx_hci_tx_work(struct work_struct *work)
 
 static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 {
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	struct sk_buff_head rx_list;
-#endif
 	struct sk_buff *rx_mpdu;
 	int rx_cnt, ret = 0;
 	size_t dlen;
 	u32 status = isr_status;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct timespec rx_io_start_time, rx_io_end_time, rx_io_diff_time;
-	struct timespec rx_proc_start_time, rx_proc_end_time, rx_proc_diff_time;
-#endif
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	skb_queue_head_init(&rx_list);
-#endif
 	hctl->rx_last_status_valid = false;
 	for (rx_cnt = 0; (status & SSV6XXX_INT_RX) && (rx_cnt < 32); rx_cnt++) {
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable)
-			getnstimeofday(&rx_io_start_time);
-#endif
 		/* in: room in rx_buf, out: frame length */
 		dlen = MAX_FRAME_SIZE;
 		ret = IF_RECV(hctl, hctl->rx_buf->data, &dlen);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable)
-			getnstimeofday(&rx_io_end_time);
-#endif
 		if (ret < 0 || dlen <= 0) {
 			pr_warn_ratelimited("%s(): IF_RECV() returns %d (dlen=%d)\n",
 			       __FUNCTION__, ret, (int)dlen);
@@ -465,15 +449,7 @@ static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 		}
 		hctl->rx_pkt++;
 		skb_put(rx_mpdu, dlen);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable)
-			getnstimeofday(&rx_proc_start_time);
-#endif
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 		__skb_queue_tail(&rx_list, rx_mpdu);
-#else
-		hctl->shi->hci_rx_cb(rx_mpdu, hctl->shi->rx_cb_args);
-#endif
 		if (HCI_IRQ_STATUS(hctl, &status) < 0) {
 			status = 0;
 			hctl->rx_last_status_valid = false;
@@ -481,69 +457,25 @@ static int _do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 			hctl->rx_last_status = status;
 			hctl->rx_last_status_valid = true;
 		}
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable) {
-			getnstimeofday(&rx_proc_end_time);
-			hctl->isr_rx_io_count++;
-			rx_io_diff_time =
-			    timespec_sub(rx_io_end_time, rx_io_start_time);
-			hctl->isr_rx_io_time +=
-			    timespec_to_ns(&rx_io_diff_time);
-			rx_proc_diff_time =
-			    timespec_sub(rx_proc_end_time, rx_proc_start_time);
-			hctl->isr_rx_proc_time +=
-			    timespec_to_ns(&rx_proc_diff_time);
-		}
-#endif
 	}
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	if (hctl->isr_mib_enable)
-		getnstimeofday(&rx_proc_start_time);
-#endif
 	hctl->shi->hci_rx_cb(&rx_list, hctl->shi->rx_cb_args);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	if (hctl->isr_mib_enable) {
-		getnstimeofday(&rx_proc_end_time);
-		rx_proc_diff_time =
-		    timespec_sub(rx_proc_end_time, rx_proc_start_time);
-		hctl->isr_rx_proc_time += timespec_to_ns(&rx_proc_diff_time);
-	}
-#endif
-#endif
 	return ret;
 }
 
 static void ssv6xxx_hci_rx_work(struct work_struct *work)
 {
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	struct sk_buff_head rx_list;
-#endif
 	struct sk_buff *rx_mpdu;
 	int rx_cnt, ret;
 	size_t dlen;
 	u32 status;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct timespec rx_io_start_time, rx_io_end_time, rx_io_diff_time;
-	struct timespec rx_proc_start_time, rx_proc_end_time, rx_proc_diff_time;
-#endif
 	ctrl_hci->rx_work_running = 1;
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	skb_queue_head_init(&rx_list);
-#endif
 	status = SSV6XXX_INT_RX;
 	for (rx_cnt = 0; (status & SSV6XXX_INT_RX) && (rx_cnt < 32); rx_cnt++) {
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (ctrl_hci->isr_mib_enable)
-			getnstimeofday(&rx_io_start_time);
-#endif
 		/* in: room in rx_buf, out: frame length */
 		dlen = MAX_FRAME_SIZE;
 		ret = IF_RECV(ctrl_hci, ctrl_hci->rx_buf->data, &dlen);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (ctrl_hci->isr_mib_enable)
-			getnstimeofday(&rx_io_end_time);
-#endif
 		if (ret < 0 || dlen <= 0) {
 			pr_warn_ratelimited("%s(): IF_RECV() returns %d (dlen=%d)\n",
 			       __FUNCTION__, ret, (int)dlen);
@@ -560,139 +492,13 @@ static void ssv6xxx_hci_rx_work(struct work_struct *work)
 		}
 		ctrl_hci->rx_pkt++;
 		skb_put(rx_mpdu, dlen);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (ctrl_hci->isr_mib_enable)
-			getnstimeofday(&rx_proc_start_time);
-#endif
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 		__skb_queue_tail(&rx_list, rx_mpdu);
-#else
-		ctrl_hci->shi->hci_rx_cb(rx_mpdu, ctrl_hci->shi->rx_cb_args);
-#endif
 		HCI_IRQ_STATUS(ctrl_hci, &status);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (ctrl_hci->isr_mib_enable) {
-			getnstimeofday(&rx_proc_end_time);
-			ctrl_hci->isr_rx_io_count++;
-			rx_io_diff_time =
-			    timespec_sub(rx_io_end_time, rx_io_start_time);
-			ctrl_hci->isr_rx_io_time +=
-			    timespec_to_ns(&rx_io_diff_time);
-			rx_proc_diff_time =
-			    timespec_sub(rx_proc_end_time, rx_proc_start_time);
-			ctrl_hci->isr_rx_proc_time +=
-			    timespec_to_ns(&rx_proc_diff_time);
-		}
-#endif
 	}
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	if (ctrl_hci->isr_mib_enable)
-		getnstimeofday(&rx_proc_start_time);
-#endif
 	ctrl_hci->shi->hci_rx_cb(&rx_list, ctrl_hci->shi->rx_cb_args);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	if (ctrl_hci->isr_mib_enable) {
-		getnstimeofday(&rx_proc_end_time);
-		rx_proc_diff_time =
-		    timespec_sub(rx_proc_end_time, rx_proc_start_time);
-		ctrl_hci->isr_rx_proc_time +=
-		    timespec_to_ns(&rx_proc_diff_time);
-	}
-#endif
-#endif
 	ctrl_hci->rx_work_running = 0;
 }
 
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-static void ssv6xxx_isr_mib_reset(void)
-{
-	ctrl_hci->isr_mib_reset = 0;
-	ctrl_hci->isr_total_time = 0;
-	ctrl_hci->isr_rx_io_time = 0;
-	ctrl_hci->isr_tx_io_time = 0;
-	ctrl_hci->isr_rx_io_count = 0;
-	ctrl_hci->isr_tx_io_count = 0;
-	ctrl_hci->isr_rx_proc_time = 0;
-}
-
-static int hw_txq_len_open(struct inode *inode, struct file *filp)
-{
-	filp->private_data = inode->i_private;
-	return 0;
-}
-
-static ssize_t hw_txq_len_read(struct file *filp, char __user * buffer,
-			       size_t count, loff_t * ppos)
-{
-	ssize_t ret;
-	struct ssv6xxx_hci_ctrl *hctl =
-	    (struct ssv6xxx_hci_ctrl *)filp->private_data;
-	char *summary_buf = kzalloc(1024, GFP_KERNEL);
-	char *prn_ptr = summary_buf;
-	int prt_size;
-	int buf_size = 1024;
-	int i = 0;
-	if (!summary_buf)
-		return -ENOMEM;
-	for (i = 0; i < SSV_HW_TXQ_NUM; i++) {
-		prt_size =
-		    snprintf(prn_ptr, buf_size, "\n\rhw_txq%d_len: %d", i,
-			     skb_queue_len(&hctl->hw_txq[i].qhead));
-		prn_ptr += prt_size;
-		buf_size -= prt_size;
-	}
-	buf_size = 1024 - buf_size;
-	ret =
-	    simple_read_from_buffer(buffer, count, ppos, summary_buf, buf_size);
-	kfree(summary_buf);
-	return ret;
-}
-
-struct file_operations hw_txq_len_fops = {
-	.owner = THIS_MODULE,
-	.open = hw_txq_len_open,
-	.read = hw_txq_len_read,
-};
-
-bool ssv6xxx_hci_init_debugfs(struct dentry *dev_deugfs_dir)
-{
-	ctrl_hci->debugfs_dir = debugfs_create_dir("hci", dev_deugfs_dir);
-	if (ctrl_hci->debugfs_dir == NULL) {
-		dev_err(ctrl_hci->shi->dev,
-			"Failed to create HCI debugfs directory.\n");
-		return false;
-	}
-	debugfs_create_u32("TXQ_mask", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->txq_mask);
-	debugfs_create_u32("hci_isr_mib_enable", 00644, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_mib_enable);
-	debugfs_create_u32("hci_isr_mib_reset", 00644, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_mib_reset);
-	debugfs_create_u64("isr_total_time", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_total_time);
-	debugfs_create_u64("tx_io_time", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_tx_io_time);
-	debugfs_create_u64("rx_io_time", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_rx_io_time);
-	debugfs_create_u32("tx_io_count", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_tx_io_count);
-	debugfs_create_u32("rx_io_count", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_rx_io_count);
-	debugfs_create_u64("rx_proc_time", 00444, ctrl_hci->debugfs_dir,
-			   &ctrl_hci->isr_rx_proc_time);
-	debugfs_create_file("hw_txq_len", 00444, ctrl_hci->debugfs_dir,
-			    ctrl_hci, &hw_txq_len_fops);
-	return true;
-}
-
-void ssv6xxx_hci_deinit_debugfs(void)
-{
-	if (ctrl_hci->debugfs_dir == NULL)
-		return;
-	ctrl_hci->debugfs_dir = NULL;
-}
-#endif
 static int _isr_do_rx(struct ssv6xxx_hci_ctrl *hctl, u32 isr_status)
 {
 	int status;
@@ -728,32 +534,12 @@ static int _do_tx(struct ssv6xxx_hci_ctrl *hctl, u32 status)
 	u32 to_disable_int = 1;
 	unsigned long flags;
 	struct ssv_hw_txq *hw_txq;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct timespec tx_io_start_time, tx_io_end_time, tx_io_diff_time;
-#endif
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-	if ((!(status & SSV6XXX_INT_RX)) && htcl->irq_enable)
-		hctl->tx_irq_count++;
-#endif
 	if ((status & SSV6XXX_INT_RESOURCE_LOW) == 0)
 		return 0;
 	for (q_num = (SSV_HW_TXQ_NUM - 1); q_num >= 0; q_num--) {
 		u32 before = jiffies;
 		hw_txq = &hctl->hw_txq[q_num];
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable)
-			getnstimeofday(&tx_io_start_time);
-#endif
 		tx_count += ssv6xxx_hci_tx_handler(hw_txq, 999);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (hctl->isr_mib_enable) {
-			getnstimeofday(&tx_io_end_time);
-			tx_io_diff_time =
-			    timespec_sub(tx_io_end_time, tx_io_start_time);
-			hctl->isr_tx_io_time +=
-			    timespec_to_ns(&tx_io_diff_time);
-		}
-#endif
 		if (hctl->isr_summary_eable) {
 			if (hctl->isr_tx_time) {
 				hctl->isr_tx_time += (jiffies - before);
@@ -805,17 +591,6 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 	bool have_status = false;
 	BUG_ON(!args);
 	do {
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		struct timespec start_time, end_time, diff_time;
-		if (hctl->isr_mib_reset)
-			ssv6xxx_isr_mib_reset();
-		if (hctl->isr_mib_enable)
-			getnstimeofday(&start_time);
-#endif
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-		if (ctrl_hci->irq_enable)
-			ctrl_hci->irq_count++;
-#endif
 		mutex_lock(&hctl->hci_mutex);
 		if (hctl->int_status) {
 			u32 regval;
@@ -835,10 +610,6 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 			ret = HCI_IRQ_STATUS(hctl, &status);
 		}
 		if ((ret < 0) || ((status & hctl->int_mask) == 0)) {
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-			if (ctrl_hci->irq_enable)
-				ctrl_hci->invalid_irq_count++;
-#endif
 			mutex_unlock(&hctl->hci_mutex);
 			ret = IRQ_NONE;
 			break;
@@ -880,13 +651,6 @@ irqreturn_t ssv6xxx_hci_isr(int irq, void *args)
 			usleep_range(500, 1000);
 		}
 		ctrl_hci->isr_running = 0;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-		if (ctrl_hci->isr_mib_enable) {
-			getnstimeofday(&end_time);
-			diff_time = timespec_sub(end_time, start_time);
-			ctrl_hci->isr_total_time += timespec_to_ns(&diff_time);
-		}
-#endif
 	} while (1);
 	if (ctrl_hci->isr_summary_eable) {
 		if (dbg_isr_miss)
@@ -911,10 +675,6 @@ static struct ssv6xxx_hci_ops hci_ops = {
 	.hci_pmu_wakeup = ssv6xxx_hci_pmu_wakeup,
 	.hci_send_cmd = ssv6xxx_hci_send_cmd,
 	.hci_write_sram = ssv6xxx_hci_write_sram,
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	.hci_init_debugfs = ssv6xxx_hci_init_debugfs,
-	.hci_deinit_debugfs = ssv6xxx_hci_deinit_debugfs,
-#endif
 	.hci_interface_reset = ssv6xxx_hci_interface_reset,
 };
 
@@ -961,17 +721,6 @@ int ssv6xxx_hci_register(struct ssv6xxx_hci_info *shi)
 	HCI_IRQ_SET_MASK(ctrl_hci, 0xFFFFFFFF);
 	ssv6xxx_hci_irq_disable();
 	HCI_IRQ_REQUEST(ctrl_hci, ssv6xxx_hci_isr);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	ctrl_hci->debugfs_dir = NULL;
-	ctrl_hci->isr_mib_enable = false;
-	ctrl_hci->isr_mib_reset = 0;
-	ctrl_hci->isr_total_time = 0;
-	ctrl_hci->isr_rx_io_time = 0;
-	ctrl_hci->isr_tx_io_time = 0;
-	ctrl_hci->isr_rx_io_count = 0;
-	ctrl_hci->isr_tx_io_count = 0;
-	ctrl_hci->isr_rx_proc_time = 0;
-#endif
 	return 0;
 }
 

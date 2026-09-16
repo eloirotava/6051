@@ -620,33 +620,6 @@ static int ssv_cmd_mac(int argc, char *argv[])
 	return 0;
 }
 
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-void print_irq_count(void)
-{
-	char temp_str[512];
-	sprintf(temp_str, "irq debug (%s)\n",
-		ssv_dbg_ctrl_hci->irq_enable ? "enable" : "disable");
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "total irq (%d)\n", ssv_dbg_ctrl_hci->irq_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "invalid irq (%d)\n",
-		ssv_dbg_ctrl_hci->invalid_irq_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "rx irq (%d)\n", ssv_dbg_ctrl_hci->rx_irq_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "tx irq (%d)\n", ssv_dbg_ctrl_hci->tx_irq_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "real tx count irq (%d)\n",
-		ssv_dbg_ctrl_hci->real_tx_irq_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "tx  packet count (%d)\n",
-		ssv_dbg_ctrl_hci->irq_tx_pkt_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-	sprintf(temp_str, "rx packet (%d)\n",
-		ssv_dbg_ctrl_hci->irq_rx_pkt_count);
-	strcat(ssv6xxx_result_buf, temp_str);
-}
-#endif
 void print_isr_info(void)
 {
 	char temp_str[512];
@@ -756,36 +729,6 @@ static int ssv_cmd_hci(int argc, char *argv[])
 		print_isr_info();
 		return 0;
 	}
-#ifdef CONFIG_IRQ_DEBUG_COUNT
-	else if (argc == 3 && !strcmp(argv[1], "isr_debug")
-		 && !strcmp(argv[2], "reset")) {
-		ssv_dbg_ctrl_hci->irq_enable = 0;
-		ssv_dbg_ctrl_hci->irq_count = 0;
-		ssv_dbg_ctrl_hci->invalid_irq_count = 0;
-		ssv_dbg_ctrl_hci->tx_irq_count = 0;
-		ssv_dbg_ctrl_hci->real_tx_irq_count = 0;
-		ssv_dbg_ctrl_hci->rx_irq_count = 0;
-		ssv_dbg_ctrl_hci->isr_rx_idle_time = 0;
-		ssv_dbg_ctrl_hci->irq_rx_pkt_count = 0;
-		ssv_dbg_ctrl_hci->irq_tx_pkt_count = 0;
-		strcat(ssv6xxx_result_buf, "irq debug reset count\n");
-		return 0;
-	} else if (argc == 3 && !strcmp(argv[1], "isr_debug")
-		   && !strcmp(argv[2], "show")) {
-		print_irq_count();
-		return 0;
-	} else if (argc == 3 && !strcmp(argv[1], "isr_debug")
-		   && !strcmp(argv[2], "stop")) {
-		ssv_dbg_ctrl_hci->irq_enable = 0;
-		strcat(ssv6xxx_result_buf, "irq debug stop\n");
-		return 0;
-	} else if (argc == 3 && !strcmp(argv[1], "isr_debug")
-		   && !strcmp(argv[2], "start")) {
-		ssv_dbg_ctrl_hci->irq_enable = 1;
-		strcat(ssv6xxx_result_buf, "irq debug start\n");
-		return 0;
-	}
-#endif
 	else {
 		strcat(ssv6xxx_result_buf,
 		       "hci [txq|rxq] [show]\nhci [isr_time] [start|stop|show]\n\n");
@@ -904,87 +847,6 @@ static int ssv_cmd_hwq(int argc, char *argv[])
 	return 0;
 }
 
-#ifdef CONFIG_P2P_NOA
-static struct ssv6xxx_p2p_noa_param cmd_noa_param = {
-	50,
-	100,
-	0x12345678,
-	1,
-	255,
-	{0x4c, 0xe6, 0x76, 0xa2, 0x4e, 0x7c}
-};
-
-void noa_dump(char *temp_str)
-{
-	sprintf(temp_str,
-		"NOA Parameter:\nEnable=%d\nInterval=%d\nDuration=%d\nStart_time=0x%08x\nCount=%d\nAddr=[%02x:%02x:%02x:%02x:%02x:%02x]\n",
-		cmd_noa_param.enable, cmd_noa_param.interval,
-		cmd_noa_param.duration, cmd_noa_param.start_time,
-		cmd_noa_param.count, cmd_noa_param.addr[0],
-		cmd_noa_param.addr[1], cmd_noa_param.addr[2],
-		cmd_noa_param.addr[3], cmd_noa_param.addr[4],
-		cmd_noa_param.addr[5]);
-	strcat(ssv6xxx_result_buf, temp_str);
-}
-
-void ssv6xxx_send_noa_cmd(struct ssv_softc *sc,
-			  struct ssv6xxx_p2p_noa_param *p2p_noa_param)
-{
-	struct sk_buff *skb;
-	struct cfg_host_cmd *host_cmd;
-	int retry_cnt = 5;
-	skb =
-	    ssvdevice_skb_alloc(HOST_CMD_HDR_LEN +
-				sizeof(struct ssv6xxx_p2p_noa_param));
-	skb->data_len = HOST_CMD_HDR_LEN + sizeof(struct ssv6xxx_p2p_noa_param);
-	skb->len = skb->data_len;
-	host_cmd = (struct cfg_host_cmd *)skb->data;
-	host_cmd->c_type = HOST_CMD;
-	host_cmd->h_cmd = (u8) SSV6XXX_HOST_CMD_SET_NOA;
-	host_cmd->len = skb->data_len;
-	memcpy(host_cmd->dat32, p2p_noa_param,
-	       sizeof(struct ssv6xxx_p2p_noa_param));
-	while ((HCI_SEND_CMD(sc->sh, skb) != 0) && (retry_cnt)) {
-		pr_debug("NOA cmd retry=%d\n", retry_cnt);
-		retry_cnt--;
-	}
-	ssvdevice_skb_free(skb);
-}
-
-static int ssv_cmd_noa(int argc, char *argv[])
-{
-	char temp_str[512];
-	char *endp;
-	if (argc == 2 && !strcmp(argv[1], "show")) {
-		;
-	} else if (argc == 3 && !strcmp(argv[1], "duration")) {
-		cmd_noa_param.duration = simple_strtoul(argv[2], &endp, 0);
-	} else if (argc == 3 && !strcmp(argv[1], "interval")) {
-		cmd_noa_param.interval = simple_strtoul(argv[2], &endp, 0);
-	} else if (argc == 3 && !strcmp(argv[1], "start")) {
-		cmd_noa_param.start_time = simple_strtoul(argv[2], &endp, 0);
-	} else if (argc == 3 && !strcmp(argv[1], "enable")) {
-		cmd_noa_param.enable = simple_strtoul(argv[2], &endp, 0);
-	} else if (argc == 3 && !strcmp(argv[1], "count")) {
-		cmd_noa_param.count = simple_strtoul(argv[2], &endp, 0);
-	} else if (argc == 8 && !strcmp(argv[1], "addr")) {
-		cmd_noa_param.addr[0] = simple_strtoul(argv[2], &endp, 16);
-		cmd_noa_param.addr[1] = simple_strtoul(argv[3], &endp, 16);
-		cmd_noa_param.addr[2] = simple_strtoul(argv[4], &endp, 16);
-		cmd_noa_param.addr[3] = simple_strtoul(argv[5], &endp, 16);
-		cmd_noa_param.addr[4] = simple_strtoul(argv[6], &endp, 16);
-		cmd_noa_param.addr[5] = simple_strtoul(argv[7], &endp, 16);
-	} else if (argc == 2 && !strcmp(argv[1], "send")) {
-		ssv6xxx_send_noa_cmd(ssv_dbg_sc, &cmd_noa_param);
-	} else {
-		sprintf(temp_str, "## wrong command\n");
-		strcat(ssv6xxx_result_buf, temp_str);
-		return 0;
-	}
-	noa_dump(temp_str);
-	return 0;
-}
-#endif
 static int ssv_cmd_mib(int argc, char *argv[])
 {
 	u32 addr, value;
@@ -1697,9 +1559,6 @@ struct ssv_cmd_table cmd_table[] = {
 	{"sta", ssv_cmd_sta, "svv6200 station info."},
 	{"dump", ssv_cmd_dump, "dump ssv6200 tables."},
 	{"hwq", ssv_cmd_hwq, "hardware queue staus"},
-#ifdef CONFIG_P2P_NOA
-	{"noa", ssv_cmd_noa, "config noa param"},
-#endif
 	{"irq", ssv_cmd_irq, "get sdio irq status."},
 	{"mac", ssv_cmd_mac, "ieee80211 swmac."},
 	{"hci", ssv_cmd_hci, "HCI command."},

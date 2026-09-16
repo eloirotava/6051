@@ -44,10 +44,6 @@ struct ssv6xxx_hci_ops {
 	bool (*hci_txq_empty)(int txqid);
 	int (*hci_pmu_wakeup)(void);
 	int (*hci_send_cmd)(struct sk_buff *);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	bool (*hci_init_debugfs)(struct dentry * dev_deugfs_dir);
-	void (*hci_deinit_debugfs)(void);
-#endif
 	int (*hci_write_sram)(u32 addr, u8 * data, u32 size);
 	int (*hci_interface_reset)(void);
 };
@@ -55,11 +51,7 @@ struct ssv6xxx_hci_info {
 	struct device *dev;
 	struct ssv6xxx_hwif_ops *if_ops;
 	struct ssv6xxx_hci_ops *hci_ops;
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 	int (*hci_rx_cb)(struct sk_buff_head *, void *);
-#else
-	int (*hci_rx_cb)(struct sk_buff *, void *);
-#endif
 	void *rx_cb_args;
 	void (*hci_tx_cb)(struct sk_buff_head *, void *);
 	void *tx_cb_args;

@@ -196,17 +196,6 @@ struct ssv6200_rxphy_info_padding {
 struct ssv6200_txphy_info {
 	u32 rsvd[7];
 };
-#ifdef CONFIG_P2P_NOA
-struct ssv6xxx_p2p_noa_param {
-	u32 duration;
-	u32 interval;
-	u32 start_time;
-	u32 enable:8;
-	u32 count:8;
-	u8 addr[6];
-	u8 vif_id;
-} __attribute__((packed));
-#endif
 typedef struct cfg_host_cmd {
 	u32 len:16;
 	u32 c_type:3;
@@ -235,9 +224,6 @@ typedef enum {
 	SSV6XXX_HOST_CMD_WATCHDOG_START,
 	SSV6XXX_HOST_CMD_WATCHDOG_STOP,
 	SSV6XXX_HOST_CMD_WSID_OP,
-#ifdef CONFIG_P2P_NOA
-	SSV6XXX_HOST_CMD_SET_NOA,
-#endif
 	SSV6XXX_HOST_SOC_CMD_MAXID,
 } ssv6xxx_host_cmd_id;
 #define SSV_NUM_HW_STA 2
@@ -250,20 +236,11 @@ typedef struct cfg_host_event {
 	u8 dat[0];
 } HDR_HostEvent;
 typedef enum {
-#ifdef USE_CMD_RESP
-	SOC_EVT_CMD_RESP,
-	SOC_EVT_SCAN_RESULT,
-	SOC_EVT_DEAUTH,
-#else
 	SOC_EVT_GET_REG_RESP,
-#endif
 	SOC_EVT_NO_BA,
 	SOC_EVT_RC_MPDU_REPORT,
 	SOC_EVT_RC_AMPDU_REPORT,
 	SOC_EVT_LOG,
-#ifdef CONFIG_P2P_NOA
-	SOC_EVT_NOA,
-#endif
 	SOC_EVT_USER_END,
 	SOC_EVT_SDIO_TEST_COMMAND,
 	SOC_EVT_RESET_HOST,
@@ -272,16 +249,6 @@ typedef enum {
 	SOC_EVT_TXLOOPBK_RESULT,
 	SOC_EVT_MAXID,
 } ssv6xxx_soc_event;
-#ifdef CONFIG_P2P_NOA
-typedef enum {
-	SSV6XXX_NOA_START = 0,
-	SSV6XXX_NOA_STOP,
-} ssv6xxx_host_noa_event;
-struct ssv62xx_noa_evt {
-	u8 evt_id;
-	u8 vif;
-} __attribute__((packed));
-#endif
 typedef enum {
 	SSV6XXX_RC_COUNTER_CLEAR = 1,
 	SSV6XXX_RC_REPORT,
@@ -421,22 +388,10 @@ struct SKB_info_st {
 	u16 ampdu_tx_final_retry_count;
 	u16 lowest_rate;
 	struct fw_rc_retry_params rates[SSV62XX_TX_MAX_RATES];
-#ifdef CONFIG_DEBUG_SKB_TIMESTAMP
-	ktime_t timestamp;
-#endif
 };
 typedef struct SKB_info_st SKB_info;
 typedef struct SKB_info_st *p_SKB_info;
 #define SSV_SKB_info_size (sizeof(struct SKB_info_st))
-#ifdef CONFIG_DEBUG_SKB_TIMESTAMP
-#define SKB_DURATION_TIMEOUT_MS 100
-enum ssv_debug_skb_timestamp {
-	SKB_DURATION_STAGE_TX_ENQ,
-	SKB_DURATION_STAGE_TO_SDIO,
-	SKB_DURATION_STAGE_IN_HWQ,
-	SKB_DURATION_STAGE_END
-};
-#endif
 #define SSV6051Q_P1 0x00000000
 #define SSV6051Q_P2 0x70000000
 #define SSV6051Z 0x71000000

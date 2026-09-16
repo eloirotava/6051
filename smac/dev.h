@@ -24,7 +24,9 @@
 #include "ssv_rc_common.h"
 #include "drv_comm.h"
 #include "sec.h"
-#include "p2p.h"
+#include <net/mac80211.h>
+#include <ssv6200.h>
+#include "drv_comm.h"
 #include <linux/kthread.h>
 #define SSV6200_MAX_HW_MAC_ADDR 2
 #define SSV6200_MAX_VIF 2
@@ -146,9 +148,6 @@ extern u16 generic_deci_tbl[];
 #define SSV6XXX_USE_LOCAL_SW_DECRYPT(_priv) (_priv->need_sw_decrypt)
 #define SSV6XXX_USE_MAC80211_DECRYPT(_priv) (_priv->use_mac80211_decrypt)
 struct ssv_softc;
-#ifdef CONFIG_P2P_NOA
-struct ssv_p2p_noa;
-#endif
 #define SSV6200_HT_TX_STREAMS 1
 #define SSV6200_HT_RX_STREAMS 1
 #define SSV6200_RX_HIGHEST_RATE 72
@@ -217,18 +216,12 @@ struct ssv_sta_info {
 	struct ieee80211_vif *vif;
 	bool sleeping;
 	bool tim_set;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct dentry *debugfs_dir;
-#endif
 };
 struct ssv_vif_info {
 	struct ieee80211_vif *vif;
 	struct ssv_vif_priv_data *vif_priv;
 	enum nl80211_iftype if_type;
 	struct ssv6xxx_hw_sec sramKey;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct dentry *debugfs_dir;
-#endif
 };
 struct ssv_sta_priv_data {
 	int sta_idx;
@@ -278,10 +271,6 @@ struct ssv6xxx_bcast_txq {
 	struct sk_buff_head qhead;
 	int cur_qsize;
 };
-#ifdef DEBUG_AMPDU_FLUSH
-typedef struct AMPDU_TID_st AMPDU_TID;
-#define MAX_TID (24)
-#endif
 struct ssv_softc {
 	struct ieee80211_hw *hw;
 	struct device *dev;
@@ -310,9 +299,6 @@ struct ssv_softc {
 	struct workqueue_struct *rc_sample_workqueue;
 	struct sk_buff_head rc_report_queue;
 	struct work_struct rc_sample_work;
-#ifdef DEBUG_AMPDU_FLUSH
-	struct AMPDU_TID_st *tid[MAX_TID];
-#endif
 	u16 rc_sample_sechedule;
 	u16 *mac_deci_tbl;
 	struct workqueue_struct *config_wq;
@@ -354,9 +340,6 @@ struct ssv_softc {
 	u16 tx_wait_q_woken;
 	wait_queue_head_t tx_wait_q;
 	struct sk_buff_head tx_skb_q;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	u32 max_tx_skb_q_len;
-#endif
 	struct task_struct *tx_task;
 	bool tx_q_empty;
 	struct sk_buff_head tx_done_q;
@@ -366,12 +349,6 @@ struct ssv_softc {
 	struct task_struct *rx_task;
 	bool dbg_rx_frame;
 	bool dbg_tx_frame;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct dentry *debugfs_dir;
-#endif
-#ifdef CONFIG_P2P_NOA
-	struct ssv_p2p_noa p2p_noa;
-#endif
 	struct timer_list watchdog_timeout;
 	u32 watchdog_flag;
 	wait_queue_head_t fw_wait_q;
@@ -391,11 +368,7 @@ enum {
 };
 void ssv6xxx_txbuf_free_skb(struct sk_buff *skb, void *args);
 void ssv6200_rx_process(struct work_struct *work);
-#if !defined(USE_THREAD_RX) || defined(USE_BATCH_RX)
 int ssv6200_rx(struct sk_buff_head *rx_skb_q, void *args);
-#else
-int ssv6200_rx(struct sk_buff *rx_skb, void *args);
-#endif
 void ssv6xxx_tx_cb(struct sk_buff_head *skb_head, void *args);
 void ssv6xxx_tx_rate_update(struct sk_buff *skb, void *args);
 int ssv6200_tx_flow_control(void *dev, int hw_txqid, bool fc_en, int debug);
@@ -403,11 +376,6 @@ void ssv6xxx_tx_q_empty_cb(u32 txq_no, void *);
 int ssv6xxx_rf_disable(struct ssv_hw *sh);
 int ssv6xxx_rf_enable(struct ssv_hw *sh);
 int ssv6xxx_set_channel(struct ssv_softc *sc, int ch);
-#ifdef CONFIG_SSV_SMARTLINK
-int ssv6xxx_get_channel(struct ssv_softc *sc, int *pch);
-int ssv6xxx_set_promisc(struct ssv_softc *sc, int accept);
-int ssv6xxx_get_promisc(struct ssv_softc *sc, int *paccept);
-#endif
 int ssv6xxx_tx_task(void *data);
 int ssv6xxx_rx_task(void *data);
 u32 ssv6xxx_pbuf_alloc(struct ssv_softc *sc, int size, int type);
@@ -438,8 +406,4 @@ void ssv6xxx_foreach_vif_sta(struct ssv_softc *sc,
 					      struct ssv_vif_info *,
 					      struct ssv_sta_info *, void *),
 			     void *param);
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-ssize_t ssv6xxx_tx_queue_status_dump(struct ssv_softc *sc, char *status_buf,
-				     ssize_t buf_size);
-#endif
 #endif

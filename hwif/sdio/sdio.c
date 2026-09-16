@@ -227,24 +227,6 @@ io_err:
 	return ret;
 }
 
-#ifdef ENABLE_WAKE_IO_ISR_WHEN_HCI_ENQUEUE
-static int ssv6xxx_sdio_trigger_tx_rx(struct device *child)
-{
-	struct ssv6xxx_sdio_glue *glue = dev_get_drvdata(child->parent);
-	struct sdio_func *func;
-	struct mmc_host *host;
-
-	if (glue == NULL)
-		return -1;
-
-	func = dev_to_sdio_func(glue->dev);
-	host = func->card->host;
-	mmc_signal_sdio_irq(host);
-
-	return 0;
-
-}
-#endif
 
 static int __must_check
 ssv6xxx_sdio_write_reg(struct device *child, u32 addr, u32 buf)
@@ -973,9 +955,6 @@ static struct ssv6xxx_hwif_ops sdio_ops = {
 	.write = ssv6xxx_sdio_write,
 	.readreg = ssv6xxx_sdio_read_reg,
 	.writereg = ssv6xxx_sdio_write_reg,
-#ifdef ENABLE_WAKE_IO_ISR_WHEN_HCI_ENQUEUE
-	.trigger_tx_rx = ssv6xxx_sdio_trigger_tx_rx,
-#endif
 	.irq_getmask = ssv6xxx_sdio_irq_getmask,
 	.irq_setmask = ssv6xxx_sdio_irq_setmask,
 	.irq_enable = ssv6xxx_sdio_irq_enable,

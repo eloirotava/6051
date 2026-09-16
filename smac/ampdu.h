@@ -138,10 +138,6 @@ typedef struct AMPDU_TID_st {
 	struct sk_buff_head ampdu_skb_wait_encry_queue;
 	u32 ampdu_mib_reset;
 	struct AMPDU_MIB_st mib;
-#ifdef CONFIG_SSV6XXX_DEBUGFS
-	struct dentry *debugfs_dir;
-	struct sk_buff_head ba_q;
-#endif
 } AMPDU_TID, *p_AMPDU_TID;
 typedef struct AMPDU_DELIMITER_st {
 	u16 reserved:4;
