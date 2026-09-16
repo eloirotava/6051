@@ -114,6 +114,11 @@ enum ssv_wsid_op {
 	SSV_WSID_OP_GROUP_SET_TYPE = 6,
 };
 #define SSV_WSID_SEC_SW		0
+#define SSV_WSID_SEC_HW		1
+
+/* ADR_SCRT_SET cipher types */
+#define SSV_SEC_NONE		0
+#define SSV_SEC_CCMP		4
 
 /*
  * Wire formats.  All little-endian, bitfields allocated LSB first; GCC
@@ -379,6 +384,7 @@ struct ssv_agg {
 };
 
 struct ssv_sta {
+	bool rx_decrypt;	/* the chip decrypts unicast CCMP from it */
 	int wsid;
 	struct ssv_rc rc;
 	struct ssv_agg agg[SSV_AGG_TIDS];
@@ -432,6 +438,7 @@ struct ssv_dev {
 
 	/* association */
 	struct mutex mutex;
+	bool hw_decrypt;
 	struct mutex agg_mutex;	/* TX thread vs. station removal */
 	spinlock_t sta_lock;
 	struct ieee80211_vif *vif;
@@ -471,6 +478,8 @@ void ssv_set_bssid(struct ssv_dev *sd, const u8 *bssid);
 void ssv_set_slot(struct ssv_dev *sd, bool short_slot);
 int ssv_set_edca(struct ssv_dev *sd, u16 ac, bool qos,
 		 const struct ieee80211_tx_queue_params *p);
+int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
+		   const struct ieee80211_key_conf *key);
 int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_wsid_del(struct ssv_dev *sd, int wsid);
 void ssv_update_ctrl_rates(struct ssv_dev *sd, u32 basic_rates);

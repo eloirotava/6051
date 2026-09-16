@@ -100,12 +100,29 @@ static void ssv_rx_rate(struct ieee80211_rx_status *rxs, unsigned int rate)
 	rxs->rate_idx = r->dot11;
 }
 
+/* frames from @wsid were decrypted by the chip */
+static bool ssv_rx_decrypted(struct ssv_dev *sd, unsigned int wsid)
+{
+	struct ieee80211_sta *sta;
+	bool ret = false;
+
+	if (wsid >= SSV_NUM_HW_STA)
+		return false;
+	rcu_read_lock();
+	sta = rcu_dereference(sd->sta[wsid]);
+	if (sta)
+		ret = READ_ONCE(((struct ssv_sta *)sta->drv_priv)->rx_decrypt);
+	rcu_read_unlock();
+	return ret;
+}
+
 static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 {
 	struct ssv_rx_desc *rxd = (struct ssv_rx_desc *)skb->data;
 	struct ssv_rxphy_info *phy = (struct ssv_rxphy_info *)(rxd + 1);
 	struct ieee80211_rx_status *rxs = IEEE80211_SKB_RXCB(skb);
 	struct ieee80211_hdr *hdr;
+	unsigned int wsid = rxd->wsid;
 	int rpci;
 
 	if (skb->len < SSV_RX_DESC_LEN + RX_PINFO_PAD + 10) {
@@ -140,6 +157,19 @@ static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 		return;
 	}
 	skb_trim(skb, skb->len - RX_PINFO_PAD);
+
+	if (ieee80211_has_protected(hdr->frame_control) &&
+	    ieee80211_is_data(hdr->frame_control) &&
+	    !is_multicast_ether_addr(hdr->addr1) &&
+	    ssv_rx_decrypted(sd, wsid)) {
+		/*
+		 * The chip removes the CCMP header and MIC.  The PN is gone
+		 * with it, so there is no replay check on these frames
+		 * (the vendor driver behaves the same).
+		 */
+		rxs->flag |= RX_FLAG_DECRYPTED | RX_FLAG_IV_STRIPPED |
+			     RX_FLAG_MIC_STRIPPED;
+	}
 	/* the chip clock is not the TSF; keep mac80211's beacon timing sane */
 	if (ieee80211_is_beacon(hdr->frame_control) ||
 	    ieee80211_is_probe_resp(hdr->frame_control)) {

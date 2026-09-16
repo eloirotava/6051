@@ -33,6 +33,10 @@ static int regulator = -1;
 module_param(regulator, int, 0444);
 MODULE_PARM_DESC(regulator, "0 = DCDC, 1 = LDO (default LDO; DT: ssv,dcdc)");
 
+static bool hw_decrypt = true;
+module_param(hw_decrypt, bool, 0444);
+MODULE_PARM_DESC(hw_decrypt, "Decrypt received unicast CCMP frames in the chip");
+
 static uint tx_gain;
 module_param(tx_gain, uint, 0444);
 MODULE_PARM_DESC(tx_gain, "TX power level 1 (max) .. 14 (min), 0 = chip default (DT: ssv,tx-gain-level)");
@@ -387,6 +391,7 @@ static void ssv_read_board_config(struct ssv_dev *sd)
 	}
 	if (regulator >= 0)
 		sd->ldo = regulator;
+	sd->hw_decrypt = hw_decrypt;
 	if (tx_gain)
 		sd->tx_gain_b = sd->tx_gain_gn = tx_gain;
 	if (sdio_clock_hz)

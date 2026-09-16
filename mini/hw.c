@@ -594,12 +594,13 @@ int ssv_set_edca(struct ssv_dev *sd, u16 ac, bool qos,
 	return ssv_reg_write(sd, ADR_TXQ0_MTX_Q_AIFSN + 0x100 * ac_to_hwq[ac], cw);
 }
 
-static int ssv_wsid_cmd(struct ssv_dev *sd, u8 op, int wsid, const u8 *addr)
+static int ssv_wsid_cmd(struct ssv_dev *sd, u8 op, int wsid, const u8 *addr,
+			u8 sec)
 {
 	struct ssv_wsid_params p = {
 		.cmd = op,
 		.wsid_idx = wsid,
-		.hw_security = SSV_WSID_SEC_SW,
+		.hw_security = sec,
 	};
 
 	memcpy(p.target_wsid, addr, ETH_ALEN);
@@ -620,8 +621,32 @@ int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr)
 	for (i = 0; i < 8; i++)
 		ssv_reg_write(sd, seq[wsid] + i * 4, 0);
 	ssv_reg_write(sd, mib[wsid], 0x40000000);
-	ssv_wsid_cmd(sd, SSV_WSID_OP_PAIRWISE_SET_TYPE, wsid, addr);
-	return ssv_wsid_cmd(sd, SSV_WSID_OP_GROUP_SET_TYPE, wsid, addr);
+	ssv_wsid_cmd(sd, SSV_WSID_OP_PAIRWISE_SET_TYPE, wsid, addr, SSV_WSID_SEC_SW);
+	return ssv_wsid_cmd(sd, SSV_WSID_OP_GROUP_SET_TYPE, wsid, addr, SSV_WSID_SEC_SW);
+}
+
+/*
+ * Pairwise CCMP key of hardware station @wsid for receive decryption, or
+ * NULL to stop.  The MAC finds the table of station N at packet buffer
+ * (security buffer id + N), and inside it the N-th station entry.
+ */
+int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
+		   const struct ieee80211_key_conf *key)
+{
+	struct ssv_hw_sta_key k = {};
+	u32 base = sd->sec_buf + (wsid << 16) +
+		   offsetof(struct ssv_hw_sec, sta_key) +
+		   wsid * sizeof(struct ssv_hw_sta_key);
+	int i;
+
+	if (key)
+		memcpy(k.pair.key, key->key, min_t(size_t, key->keylen, sizeof(k.pair.key)));
+	for (i = 0; i < sizeof(k); i += 4)
+		ssv_reg_write(sd, base + i, get_unaligned_le32((u8 *)&k + i));
+	ssv_reg_set_bits(sd, ADR_SCRT_SET, (key ? SSV_SEC_CCMP : SSV_SEC_NONE) << PAIR_SCRT_SFT,
+			 PAIR_SCRT_MSK);
+	return ssv_wsid_cmd(sd, SSV_WSID_OP_PAIRWISE_SET_TYPE, wsid, addr,
+			    key ? SSV_WSID_SEC_HW : SSV_WSID_SEC_SW);
 }
 
 void ssv_wsid_del(struct ssv_dev *sd, int wsid)

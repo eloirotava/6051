@@ -135,6 +135,7 @@ static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		return -ENOSPC;
 	}
 	ss->wsid = wsid;
+	ss->rx_decrypt = false;
 	ssv_agg_init(ss);
 	spin_lock_bh(&sd->sta_lock);
 	ssv_rc_init(sd, sta);
@@ -159,6 +160,10 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		ssv_rx_ba_session(sd, NULL, 0, 0);
 		sd->rx_ba_sta = NULL;
 	}
+	if (ss->rx_decrypt) {
+		ss->rx_decrypt = false;
+		ssv_set_rx_key(sd, ss->wsid, sta->addr, NULL);
+	}
 	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_HW_STA &&
 	    rcu_access_pointer(sd->sta[ss->wsid]) == sta) {
 		mutex_lock(&sd->agg_mutex);
@@ -172,6 +177,34 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	for (tid = 0; tid < SSV_AGG_TIDS; tid++)
 		ssv_agg_flush(sd, ss, tid);
 	return 0;
+}
+
+/*
+ * The chip cannot encrypt aggregates built by the host, so mac80211 keeps
+ * the keys (and encrypts); the chip only decrypts unicast CCMP on receive,
+ * which is where most of the CPU goes.
+ */
+static int ssv_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+		       struct ieee80211_vif *vif, struct ieee80211_sta *sta,
+		       struct ieee80211_key_conf *key)
+{
+	struct ssv_dev *sd = hw->priv;
+	struct ssv_sta *ss;
+
+	if (!sd->hw_decrypt || !sta || key->cipher != WLAN_CIPHER_SUITE_CCMP ||
+	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
+		return -EOPNOTSUPP;
+	ss = (struct ssv_sta *)sta->drv_priv;
+
+	mutex_lock(&sd->mutex);
+	if (ss->wsid >= 0) {
+		/* stop marking frames while the key changes under them */
+		WRITE_ONCE(ss->rx_decrypt, false);
+		ssv_set_rx_key(sd, ss->wsid, sta->addr, cmd == SET_KEY ? key : NULL);
+		WRITE_ONCE(ss->rx_decrypt, cmd == SET_KEY);
+	}
+	mutex_unlock(&sd->mutex);
+	return -EOPNOTSUPP;
 }
 
 static int ssv_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
@@ -261,6 +294,7 @@ static const struct ieee80211_ops ssv_ops = {
 	.sta_add = ssv_sta_add,
 	.sta_remove = ssv_sta_remove,
 	.conf_tx = ssv_conf_tx,
+	.set_key = ssv_set_key,
 	.set_rts_threshold = ssv_set_rts_threshold,
 	.ampdu_action = ssv_ampdu_action,
 	.sw_scan_start = ssv_sw_scan_start,
