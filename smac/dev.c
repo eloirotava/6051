@@ -3158,7 +3158,10 @@ static int ssv6200_ampdu_action(struct ieee80211_hw *hw,
 		       sta->addr[0], sta->addr[1], sta->addr[2], sta->addr[3],
 		       sta->addr[4], sta->addr[5], tid);
 		ssv6200_ampdu_tx_stop(tid, sta, hw);
-		ieee80211_stop_tx_ba_cb_irqsafe(vif, sta->addr, tid);
+		/* For the FLUSH variants mac80211 is already removing the
+		 * station and must not get the callback. */
+		if (action == IEEE80211_AMPDU_TX_STOP_CONT)
+			ieee80211_stop_tx_ba_cb_irqsafe(vif, sta->addr, tid);
 		break;
 	case IEEE80211_AMPDU_TX_OPERATIONAL:
 		dev_dbg(sc->dev, "AMPDU_TX_OPERATIONAL %02X:%02X:%02X:%02X:%02X:%02X %d.\n",

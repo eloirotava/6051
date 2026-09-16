@@ -824,7 +824,9 @@ static void ssv6200_ampdu_tx_state_stop_func(struct ssv_softc *sc,
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	u8 *skb_qos_ctl = ieee80211_get_qos_ctl(hdr);
 	u8 tid_no = skb_qos_ctl[0] & 0xf;
-	if ((0 == true)
+	/* The kernel 4.x port had replaced sta->ht_cap.ht_supported with 0,
+	 * so TX aggregation was never requested. */
+	if (sta->deflink.ht_cap.ht_supported
 	    && (!!(sc->sh->cfg.hw_caps & SSV6200_HW_CAP_AMPDU_TX))) {
 		ieee80211_start_tx_ba_session(sta, tid_no, 0);
 		ampdu_db_log("start ampdu_tx(rc) : tid_no = %d\n", tid_no);
