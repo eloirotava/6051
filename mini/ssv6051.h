@@ -347,11 +347,11 @@ struct ssv_rc {
 	u8 rate[SSV_RC_MAX];	/* chip rate indices, ascending speed */
 	u8 n;
 	u8 cur;
-	u32 prob[SSV_RC_MAX];	/* EWMA success probability, 0..1024 */
-	u16 att[SSV_RC_MAX];
-	u16 ok[SSV_RC_MAX];
-	u32 frames;
-	unsigned long last_update;
+	u32 prob[SSV_RC_MAX];	/* EWMA of ACKs per transmission, 0..1024 */
+	bool sampled[SSV_RC_MAX];
+	u8 win_idx;		/* rate index used by the current window */
+	u8 win_left;
+	u32 windows;
 };
 
 struct ssv_sta {

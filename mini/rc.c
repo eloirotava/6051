@@ -3,17 +3,16 @@
  * SSV6051 rate control.
  *
  * The chip retries each frame on its own at the rate in the descriptor and
- * only reports the outcome for frames that ask for it (attempts and
- * whether an ACK came back).  About one data frame in RC_REPORT_EVERY asks,
- * and one in RC_PROBE_EVERY is sent one rate higher, so a better rate can
- * be discovered.  Each rate keeps an EWMA of its success probability; the
- * rate with the best expected throughput wins.
+ * reports counters on request.  Data frames go in windows of RC_WINDOW at
+ * one rate; the last frame of a window asks for the report.  One window in
+ * RC_PROBE_EVERY probes the next rate up or down.
+ * Each rate keeps an EWMA of ACKs per transmission; the rate with the best
+ * expected throughput wins.
  */
 #include "ssv6051.h"
 
-#define RC_REPORT_EVERY		8
-#define RC_PROBE_EVERY		32
-#define RC_INTERVAL		msecs_to_jiffies(100)
+#define RC_WINDOW		16
+#define RC_PROBE_EVERY		4
 #define RC_SCALE		1024
 #define RC_MIN_PROB		(RC_SCALE / 5)
 
@@ -89,42 +88,44 @@ void ssv_rc_init(struct ssv_dev *sd, struct ieee80211_sta *sta)
 	/* start in the lower middle; probing climbs from there */
 	rc->cur = rc->n / 3;
 	for (i = 0; i <= rc->cur; i++)
-		rc->prob[i] = RC_SCALE * 3 / 4;
-	rc->last_update = jiffies;
+		rc->prob[i] = RC_SCALE / 2;
 }
 
 u8 ssv_rc_get(struct ssv_dev *sd, struct ssv_sta *ss, bool *report)
 {
 	struct ssv_rc *rc = &ss->rc;
-	u8 idx, rate;
+	u8 rate;
 
 	spin_lock_bh(&sd->sta_lock);
-	idx = rc->cur;
-	rc->frames++;
-	if (rc->frames % RC_PROBE_EVERY == 0 && idx + 1 < rc->n) {
-		idx++;
-		*report = true;
-	} else {
-		*report = rc->frames % RC_REPORT_EVERY == 0;
+	if (!rc->win_left) {
+		/*
+		 * New window.  Every RC_PROBE_EVERY-th one probes a neighbour,
+		 * alternating up and down, so both stay fresh.
+		 */
+		rc->windows++;
+		rc->win_idx = rc->cur;
+		if (rc->windows % RC_PROBE_EVERY == 0) {
+			bool up = (rc->windows / RC_PROBE_EVERY) & 1;
+
+			if (up && rc->cur + 1 < rc->n)
+				rc->win_idx = rc->cur + 1;
+			else if (!up && rc->cur > 0)
+				rc->win_idx = rc->cur - 1;
+		}
+		rc->win_left = RC_WINDOW;
 	}
-	rate = rc->rate[idx];
+	rc->win_left--;
+	*report = !rc->win_left;
+	rate = rc->rate[rc->win_idx];
 	spin_unlock_bh(&sd->sta_lock);
 	return rate;
 }
 
-static void ssv_rc_update(struct ssv_rc *rc)
+static void ssv_rc_select(struct ssv_rc *rc)
 {
 	u32 best_tp = 0;
 	int i, best = rc->cur;
 
-	for (i = 0; i < rc->n; i++) {
-		if (rc->att[i]) {
-			u32 p = min_t(u32, rc->ok[i], rc->att[i]) * RC_SCALE / rc->att[i];
-
-			rc->prob[i] = rc->prob[i] ? (rc->prob[i] * 3 + p) / 4 : p;
-			rc->att[i] = rc->ok[i] = 0;
-		}
-	}
 	for (i = 0; i < rc->n; i++) {
 		u32 tp = rc->prob[i] * ssv_rates[rc->rate[i]].kbps / 64;
 
@@ -139,6 +140,13 @@ static void ssv_rc_update(struct ssv_rc *rc)
 	rc->cur = best;
 }
 
+/*
+ * The firmware accumulates, per station, the frames sent since the last
+ * report (ampdu_len), how many were acknowledged (ampdu_ack_len) and the
+ * transmissions it took at the reported rate (count), and reports when a
+ * frame asking for it completes.  The driver keeps the rate constant for a
+ * whole window, so the numbers belong to that rate.
+ */
 void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 {
 	struct ieee80211_sta *sta;
@@ -146,7 +154,7 @@ void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 	int rate = rpt->rates[0].data_rate;
 	int i;
 
-	if (rpt->wsid >= SSV_NUM_HW_STA || rate < 0)
+	if (rpt->wsid >= SSV_NUM_HW_STA || rate < 0 || !rpt->rates[0].count)
 		return;
 	/* reports name the long-preamble CCK rate */
 	if (rate > 3 && rate < SSV_RATE_OFDM)
@@ -161,18 +169,21 @@ void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 	spin_lock_bh(&sd->sta_lock);
 	for (i = 0; i < rc->n; i++) {
 		u8 r = rc->rate[i];
+		u32 p;
 
 		if (r > 3 && r < SSV_RATE_OFDM)
 			r -= 3;
-		if (r == rate) {
-			rc->att[i] += max_t(u8, rpt->rates[0].count, 1);
-			rc->ok[i] += rpt->ampdu_ack_len ? 1 : 0;
-			break;
-		}
-	}
-	if (time_after(jiffies, rc->last_update + RC_INTERVAL)) {
-		ssv_rc_update(rc);
-		rc->last_update = jiffies;
+		if (r != rate)
+			continue;
+		p = min_t(u32, rpt->ampdu_ack_len, rpt->rates[0].count) * RC_SCALE /
+		    rpt->rates[0].count;
+		rc->prob[i] = rc->sampled[i] ? (rc->prob[i] * 3 + p) / 4 : p;
+		rc->sampled[i] = true;
+		ssv_rc_select(rc);
+		dev_dbg(sd->dev, "rc: rate %u %u/%u/%u -> p %u, cur %u (rate %u)\n",
+			r, rpt->ampdu_ack_len, rpt->ampdu_len, rpt->rates[0].count,
+			rc->prob[i], rc->cur, rc->rate[rc->cur]);
+		break;
 	}
 	spin_unlock_bh(&sd->sta_lock);
 out:
