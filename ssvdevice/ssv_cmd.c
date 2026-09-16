@@ -222,6 +222,7 @@ struct ssv6xxx_cfg_cmd_table cfg_cmds[] = {
 	{"mac_address_mode", (void *)&ssv_cfg.mac_address_mode, 0,
 	 __string2u32},
 	{"sr_bhvr", (void *)&ssv_cfg.sr_bhvr, 0, __string2u32},
+	{"sdio_clock_hz", (void *)&ssv_cfg.sdio_clock_hz, 0, __string2u32},
 	{"register", NULL, 0, __string2configuration},
 	{NULL, NULL, 0, NULL},
 };

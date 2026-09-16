@@ -1,4 +1,3 @@
-#define SDIO_USE_SLOW_CLOCK 1
 /*
  * Copyright (c) 2015 South Silicon Valley Microelectronics Inc.
  * Copyright (c) 2015 iComm Corporation
@@ -74,10 +73,22 @@ static inline int ssv_safe_sdio_toio_padded(struct sdio_func *f, unsigned int a,
 #include <linux/firmware.h>
 #include <linux/reboot.h>
 #include <ssv6200.h>
+#include <ssv_cfg.h>
+
+extern struct ssv6xxx_cfg ssv_cfg;
 #include <linux/skbuff.h>
 
 #define LOW_SPEED_SDIO_CLOCK (25000000)
-#define HIGH_SPEED_SDIO_CLOCK (37500000)
+
+/*
+ * Bus clock after the firmware upload (which always runs at 25 MHz):
+ * the module parameter wins, then sdio_clock_hz from the .cfg, else 25 MHz.
+ * On RK322x 50 MHz (the native high-speed rate) works, while the vendor's
+ * 37.5 MHz, an odd divider there, floods the bus with CRC errors.
+ */
+static uint sdio_clock_hz;
+module_param(sdio_clock_hz, uint, 0444);
+MODULE_PARM_DESC(sdio_clock_hz, "SDIO clock after firmware load, Hz (0 = cfg, default 25000000)");
 #define MAX_RX_FRAME_SIZE 0x900
 #define SSV_VENDOR_ID 0x3030
 #define SSV_CABRIO_DEVID 0x3030
@@ -947,9 +958,13 @@ static void ssv6xxx_low_sdio_clk(struct sdio_func *func)
 
 static void ssv6xxx_high_sdio_clk(struct sdio_func *func)
 {
-#ifndef SDIO_USE_SLOW_CLOCK
-	ssv6xxx_set_sdio_clk(func, HIGH_SPEED_SDIO_CLOCK);
-#endif
+	u32 hz = sdio_clock_hz ? sdio_clock_hz : ssv_cfg.sdio_clock_hz;
+
+	if (hz > LOW_SPEED_SDIO_CLOCK) {
+		ssv6xxx_set_sdio_clk(func, hz);
+		dev_info(&func->dev, "SDIO clock %u Hz (asked %u)\n",
+			 func->card->host->ios.clock, hz);
+	}
 }
 
 static struct ssv6xxx_hwif_ops sdio_ops = {

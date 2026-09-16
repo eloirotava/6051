@@ -56,5 +56,6 @@ struct ssv6xxx_cfg {
 	u8 mac_output_path[128];
 	u32 ignore_efuse_mac;
 	u32 mac_address_mode;
+	u32 sdio_clock_hz;
 };
 #endif
