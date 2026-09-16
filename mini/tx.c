@@ -10,6 +10,7 @@
  */
 #include <linux/delay.h>
 #include <linux/etherdevice.h>
+#include <linux/freezer.h>
 #include <linux/kthread.h>
 
 #include "ssv6051.h"
@@ -324,12 +325,13 @@ static int ssv_tx_thread(void *data)
 {
 	struct ssv_dev *sd = data;
 
+	set_freezable();
 	while (!kthread_should_stop()) {
 		bool sent = false, blocked = false;
 		int q;
 
 		/* aggregates waiting for a Block Ack need a periodic look */
-		wait_event_interruptible_timeout(sd->tx_wait,
+		wait_event_freezable_timeout(sd->tx_wait,
 						 ssv_queued_hw(sd) || READ_ONCE(sd->agg_kick) ||
 						 kthread_should_stop(),
 						 msecs_to_jiffies(50));

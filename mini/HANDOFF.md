@@ -19,12 +19,15 @@ Driver pequeno, limpo, com cara de mainline, para o SSV6051P em SDIO
   propriedades de DT;
 - estilo do kernel (checkpatch), sem código morto, comentários curtos.
 
-## Estado atual (branch `mini`, commit 67ea754)
+## Estado atual (branch `mini`)
 
 Funciona: probe, upload do firmware, calibração, scan, associação WPA2 em
 ~4 s, DHCP, HT20 com SGI (MCS0-7), controle de taxa próprio, AMPDU no RX
 (sessão de BA no chip) e AMPDU no TX (agregado montado no host, BA
-encaminhado pelo firmware, retentativa pelo host).
+encaminhado pelo firmware, retentativa pelo host, até 3 agregados em voo
+por TID), decifragem CCMP unicast no chip (`hw_decrypt=1`), suspend/resume
+(só compilado: o rk não tem RTC nem `pm_test`, não dá para testar sem
+acesso físico).
 
 Vazão (iperf3 contra o Cudy, rk a poucos cm do TP-Link, mesmas condições):
 
@@ -168,26 +171,30 @@ AMPDU:
 
 ## Pendências (ordem sugerida)
 
+Já feito e medido: vários agregados em voo (ganho pequeno no up),
+decifragem no chip (~25% menos CPU por Mbit/s no down), suspend/resume.
+Testado e descartado: RX STBC (o AP passa a mandar STBC e o down cai ~1/3;
+comentário em `mac.c`), agregados maiores que ~14 kB (sem ganho; e o
+`tx_buf` tem 16 kB, há trava).
+
 1. **Remover os `dev_dbg` mais ruidosos** de `ampdu.c`/`rx.c` (evento
    desconhecido) ou deixá-los só onde ajudam; conferir com `checkpatch.pl
    --strict -f`.
-2. **Mais de um agregado em voo por TID** (o legado manda vários dentro da
-   janela de 64 e casa o BA pelo `seq[]` da nota). Deve melhorar o up.
-3. **Criptografia por hardware** (`set_key`, CCMP): no legado baixou a CPU
-   no down de ~23% para ~15%. Cuidado com PEAP/rekey e com o AMPDU
-   (`fCmd` ganha `M_ENG_ENCRYPT`; ver `smac/dev.c` do legado).
-4. **Power save** (`IEEE80211_HW_SUPPORTS_PS`, comando PS=2 do host) e
-   `suspend/resume`.
+2. **Testar suspend/resume** numa placa com acesso físico (ou com RTC):
+   `rtcwake -m mem -s 20`, depois ver se reassocia.
+3. **Power save 802.11**: não implementado de propósito. O legado também
+   não tinha (o comando PS do firmware só estaciona o MCU); TV box fica na
+   tomada e PS só piora latência/vazão. Se um dia quiser: descobrir se o
+   firmware acorda sozinho no beacon/DTIM antes de ligar `SUPPORTS_PS`.
+4. **Cifragem no chip para frames não agregados** (gerência, EAPOL,
+   pares sem HT): exigiria `set_key` devolver 0 e cifrar agregados no host
+   ou no chip; hoje o mac80211 cifra tudo e isso não é gargalo.
 5. **Teste de robustez**: 20 recargas seguidas, scan com tráfego,
-   roaming/reassociação, `rmmod` com tráfego, AP sumindo; olhar `dmesg`
-   por WARN/leak.
+   roaming/reassociação, `rmmod` com tráfego, AP sumindo, rekey de PTK
+   (a chave no chip é trocada em `set_key`); olhar `dmesg` por WARN/leak.
 6. **Boot pelo mini** (só com ok do dono): instalar em `updates/`,
    blacklist do legado, 5+ reboots limpos (há `boottest.sh` nas tools).
-7. **RX STBC / Greenfield**: o datasheet diz que o chip suporta; o
-   legado só anunciava com `hw_cap_gf = on` no cfg (o cfg atual deixa
-   `off`). Testar `IEEE80211_HT_CAP_RX_STBC` (1 stream) sozinho e medir o
-   down antes de anunciar GF.
-8. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
+7. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
    MAINTAINERS, firmware em linux-firmware, nome definitivo do módulo.
 
 Fora do escopo: AP/hotspot, P2P, IBSS, 40 MHz (o chip é HT20), monitor.

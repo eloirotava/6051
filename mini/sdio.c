@@ -484,6 +484,40 @@ static void ssv_sdio_remove(struct sdio_func *func)
 	ssv_mac_free(sd);
 }
 
+/*
+ * System sleep.  mac80211 stops the device first (the wiphy is our child);
+ * the card may lose power, so resume redoes the probe-time bring-up and
+ * mac80211's restart reloads the firmware.
+ */
+static int ssv_sdio_suspend(struct device *dev)
+{
+	struct ssv_dev *sd = sdio_get_drvdata(dev_to_sdio_func(dev));
+
+	if (!sd)
+		return 0;
+	ssv_irq_mask(sd, 0xff);
+	ssv_pmu_sleep(sd);
+	return 0;
+}
+
+static int ssv_sdio_resume(struct device *dev)
+{
+	struct ssv_dev *sd = sdio_get_drvdata(dev_to_sdio_func(dev));
+	int ret;
+
+	if (!sd)
+		return 0;
+	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
+	ret = ssv_sdio_init(sd);
+	if (ret)
+		return ret;
+	ssv_irq_mask(sd, 0xff);
+	ssv_reset_chip(sd);
+	return ssv_hw_probe(sd);
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(ssv_sdio_pm, ssv_sdio_suspend, ssv_sdio_resume);
+
 static const struct sdio_device_id ssv_sdio_ids[] = {
 	{ SDIO_DEVICE(SSV_SDIO_VENDOR, SSV_SDIO_DEVICE) },
 	{ }
@@ -495,6 +529,9 @@ static struct sdio_driver ssv_sdio_driver = {
 	.id_table = ssv_sdio_ids,
 	.probe = ssv_sdio_probe,
 	.remove = ssv_sdio_remove,
+	.drv = {
+		.pm = pm_sleep_ptr(&ssv_sdio_pm),
+	},
 };
 
 static int __init ssv_init(void)
