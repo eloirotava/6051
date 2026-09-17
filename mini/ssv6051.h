@@ -439,6 +439,14 @@ struct ssv_dev {
 	/* association */
 	struct mutex mutex;
 	bool hw_decrypt;
+	/* association watchdog: data frames seen, and a chip restart */
+	u32 rx_data;		/* unicast data frames received */
+	u32 assoc_rx_data;
+	bool assoc_privacy;
+	bool assoc_keyed;
+	u8 dead_assocs;
+	bool need_reset;
+	struct work_struct restart_work;
 	struct mutex agg_mutex;	/* TX thread vs. station removal */
 	spinlock_t sta_lock;
 	struct ieee80211_vif *vif;
@@ -478,6 +486,7 @@ void ssv_set_bssid(struct ssv_dev *sd, const u8 *bssid);
 void ssv_set_slot(struct ssv_dev *sd, bool short_slot);
 int ssv_set_edca(struct ssv_dev *sd, u16 ac, bool qos,
 		 const struct ieee80211_tx_queue_params *p);
+int ssv_chip_reinit(struct ssv_dev *sd, bool running);
 int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
 		   const struct ieee80211_key_conf *key);
 int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr);

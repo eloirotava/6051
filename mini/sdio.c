@@ -355,6 +355,29 @@ out:
 	return ret;
 }
 
+/*
+ * Bring the chip back to its probe-time state (bus, reset, RF setup); the
+ * next ssv_hw_start() loads the firmware.  @running: the chip still works
+ * and gets parked first, as a module unload would.
+ */
+int ssv_chip_reinit(struct ssv_dev *sd, bool running)
+{
+	int ret;
+
+	if (running) {
+		ssv_irq_mask(sd, 0xff);
+		ssv_pmu_sleep(sd);
+		msleep(50);
+	}
+	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
+	ret = ssv_sdio_init(sd);
+	if (ret)
+		return ret;
+	ssv_irq_mask(sd, 0xff);
+	ssv_reset_chip(sd);
+	return ssv_hw_probe(sd);
+}
+
 static void ssv_read_board_config(struct ssv_dev *sd)
 {
 	struct device_node *np = sd->dev->of_node;
@@ -503,17 +526,10 @@ static int ssv_sdio_suspend(struct device *dev)
 static int ssv_sdio_resume(struct device *dev)
 {
 	struct ssv_dev *sd = sdio_get_drvdata(dev_to_sdio_func(dev));
-	int ret;
 
 	if (!sd)
 		return 0;
-	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
-	ret = ssv_sdio_init(sd);
-	if (ret)
-		return ret;
-	ssv_irq_mask(sd, 0xff);
-	ssv_reset_chip(sd);
-	return ssv_hw_probe(sd);
+	return ssv_chip_reinit(sd, false);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(ssv_sdio_pm, ssv_sdio_suspend, ssv_sdio_resume);
