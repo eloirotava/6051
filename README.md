@@ -25,7 +25,6 @@ do fabricante (`ssv6051.ko` + `ssv6051-wifi.cfg`).
 | `ap.c` | modo hotspot |
 | `ssv6051.h`, `reg.h`, `aux.h`, `tables.h` | definições e tabelas do chip |
 | `ssv6051-sw.bin` | firmware do chip (vai para `/lib/firmware`) |
-| `HANDOFF.md` | notas de desenvolvimento para quem continuar o trabalho |
 
 ## Compilar
 
