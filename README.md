@@ -139,8 +139,8 @@ acrescente:
 
 ## Limitações conhecidas
 
-- Após alguns reboots a quente, a primeira associação pode falhar; o
-  driver detecta e reinicia o chip sozinho (a conexão sai 15-30 s depois).
+- Logo após o boot, o primeiro handshake WPA às vezes estoura o tempo (a
+  última mensagem não chega ao AP); o `wpa_supplicant` refaz sozinho.
 - O chip não informa se cada frame foi confirmado; o envio é reportado
   ao mac80211 como confirmado.
 - Sem power save 802.11, sem HT40 (o chip é só 20 MHz).

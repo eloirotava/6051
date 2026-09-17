@@ -134,9 +134,6 @@ static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 
 	skb_pull(skb, SSV_RX_DESC_LEN);
 	hdr = (struct ieee80211_hdr *)skb->data;
-	if (ieee80211_is_data(hdr->frame_control) &&
-	    !is_multicast_ether_addr(hdr->addr1))
-		sd->rx_data++;
 	/* Block Acks for our aggregates end with the firmware's note */
 	if (ieee80211_is_back(hdr->frame_control)) {
 		ssv_agg_ba(sd, skb);

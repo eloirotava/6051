@@ -34,89 +34,13 @@ static struct ieee80211_rate ssv_bitrates[] = {
 	{ .bitrate = 540, .hw_value = 14 },
 };
 
-/*
- * Seen after some warm reboots: the chip associates (management frames
- * work) but the unicast data frames it sends never reach the AP, so every
- * 4-way handshake times out.  Reloading the driver cures it, so after two
- * such associations in a row restart the chip the same way.  An
- * association is dead if it ended without a key (protected network) or
- * without any unicast data from the AP (open network).
- */
-#define SSV_DEAD_ASSOCS		2
-
-static void ssv_restart_work(struct work_struct *work)
-{
-	struct ssv_dev *sd = container_of(work, struct ssv_dev, restart_work);
-
-	dev_warn(sd->dev, "associations keep failing, restarting the chip\n");
-	sd->need_reset = true;
-	ieee80211_restart_hw(sd->hw);
-}
-
-static void ssv_assoc_changed(struct ssv_dev *sd, struct ieee80211_vif *vif)
-{
-	bool dead;
-
-	if (vif->cfg.assoc) {
-		struct cfg80211_bss *bss = vif->bss_conf.bss;
-
-		sd->assoc_rx_data = sd->rx_data;
-		sd->assoc_keyed = false;
-		sd->assoc_privacy = bss && (bss->capability & WLAN_CAPABILITY_PRIVACY);
-		return;
-	}
-	if (sd->assoc_privacy)
-		dead = !sd->assoc_keyed;
-	else
-		dead = sd->rx_data == sd->assoc_rx_data;
-	sd->assoc_keyed = false;
-	if (!dead) {
-		sd->dead_assocs = 0;
-		return;
-	}
-	if (++sd->dead_assocs >= SSV_DEAD_ASSOCS) {
-		sd->dead_assocs = 0;
-		schedule_work(&sd->restart_work);
-	}
-}
-
-/* Forget the stations of the dead chip; mac80211 adds them back. */
-static void ssv_drop_stations(struct ssv_dev *sd)
-{
-	struct ieee80211_sta *sta;
-	int w, t;
-
-	for (w = 0; w < SSV_NUM_STA; w++) {
-		mutex_lock(&sd->agg_mutex);
-		sta = rcu_dereference_protected(sd->sta[w],
-						lockdep_is_held(&sd->agg_mutex));
-		RCU_INIT_POINTER(sd->sta[w], NULL);
-		mutex_unlock(&sd->agg_mutex);
-		if (!sta)
-			continue;
-		synchronize_rcu();
-		for (t = 0; t < SSV_AGG_TIDS; t++)
-			ssv_agg_flush(sd, (struct ssv_sta *)sta->drv_priv, t);
-	}
-	sd->rx_ba_sta = NULL;
-}
-
 static int ssv_start(struct ieee80211_hw *hw)
 {
 	struct ssv_dev *sd = hw->priv;
-	int ret = 0;
+	int ret;
 
 	mutex_lock(&sd->mutex);
-	if (sd->need_reset) {
-		sd->need_reset = false;
-		if (sd->started)
-			ssv_hw_stop(sd);
-		ssv_tx_flush(sd);
-		ssv_drop_stations(sd);
-		ret = ssv_chip_reinit(sd, true);
-	}
-	if (!ret)
-		ret = ssv_hw_start(sd);
+	ret = ssv_hw_start(sd);
 	mutex_unlock(&sd->mutex);
 	if (ret)
 		dev_err(sd->dev, "start failed: %d\n", ret);
@@ -139,8 +63,7 @@ static int ssv_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 
 	if (vif->type != NL80211_IFTYPE_STATION && vif->type != NL80211_IFTYPE_AP)
 		return -EOPNOTSUPP;
-	/* one interface; the same vif comes back when mac80211 restarts us */
-	if (sd->vif && sd->vif != vif)
+	if (sd->vif)
 		return -EBUSY;
 
 	mutex_lock(&sd->mutex);
@@ -209,8 +132,6 @@ static void ssv_bss_info_changed(struct ieee80211_hw *hw,
 		ssv_set_slot(sd, info->use_short_slot);
 	if (changed & BSS_CHANGED_BASIC_RATES)
 		ssv_update_ctrl_rates(sd, info->basic_rates);
-	if (changed & BSS_CHANGED_ASSOC)
-		ssv_assoc_changed(sd, vif);
 	if (vif->type == NL80211_IFTYPE_AP) {
 		if (changed & (BSS_CHANGED_BEACON | BSS_CHANGED_BEACON_INT |
 			       BSS_CHANGED_BEACON_ENABLED))
@@ -304,22 +225,6 @@ static int ssv_sta_state(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	return 0;
 }
 
-/*
- * All crypto is done by mac80211 (the chip cannot encrypt aggregates built
- * by the host).  Keys are only watched to tell a working association from
- * a dead one.
- */
-static int ssv_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
-		       struct ieee80211_vif *vif, struct ieee80211_sta *sta,
-		       struct ieee80211_key_conf *key)
-{
-	struct ssv_dev *sd = hw->priv;
-
-	if (vif->type == NL80211_IFTYPE_STATION && cmd == SET_KEY && sta)
-		sd->assoc_keyed = true;
-	return -EOPNOTSUPP;
-}
-
 static int ssv_conf_tx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		       unsigned int link_id, u16 ac,
 		       const struct ieee80211_tx_queue_params *params)
@@ -407,7 +312,6 @@ static const struct ieee80211_ops ssv_ops = {
 	.sta_state = ssv_sta_state,
 	.set_tim = ssv_set_tim,
 	.conf_tx = ssv_conf_tx,
-	.set_key = ssv_set_key,
 	.set_rts_threshold = ssv_set_rts_threshold,
 	.ampdu_action = ssv_ampdu_action,
 	.sw_scan_start = ssv_sw_scan_start,
@@ -427,7 +331,6 @@ struct ssv_dev *ssv_mac_alloc(struct device *dev)
 	sd->dev = dev;
 	mutex_init(&sd->mutex);
 	mutex_init(&sd->agg_mutex);
-	INIT_WORK(&sd->restart_work, ssv_restart_work);
 	ssv_ap_init(sd);
 	spin_lock_init(&sd->sta_lock);
 	init_waitqueue_head(&sd->cali_wait);
@@ -493,7 +396,6 @@ int ssv_mac_register(struct ssv_dev *sd)
 
 void ssv_mac_unregister(struct ssv_dev *sd)
 {
-	cancel_work_sync(&sd->restart_work);
 	ieee80211_unregister_hw(sd->hw);
 	ssv_tx_deinit(sd);
 }

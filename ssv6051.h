@@ -378,14 +378,6 @@ struct ssv_dev {
 
 	/* association */
 	struct mutex mutex;
-	/* association watchdog: data frames seen, and a chip restart */
-	u32 rx_data;		/* unicast data frames received */
-	u32 assoc_rx_data;
-	bool assoc_privacy;
-	bool assoc_keyed;
-	u8 dead_assocs;
-	bool need_reset;
-	struct work_struct restart_work;
 	struct mutex agg_mutex;	/* TX thread vs. station removal */
 	spinlock_t sta_lock;
 	struct ieee80211_vif *vif;
@@ -446,7 +438,6 @@ void ssv_beacon_enable(struct ssv_dev *sd, bool on);
 void ssv_beacon_timing(struct ssv_dev *sd, u16 interval, u8 dtim_period);
 int ssv_beacon_set(struct ssv_dev *sd, const u8 *buf, size_t len, u8 dtim_offset);
 void ssv_beacon_release(struct ssv_dev *sd);
-int ssv_chip_reinit(struct ssv_dev *sd, bool running);
 int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_wsid_del(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_update_ctrl_rates(struct ssv_dev *sd, u32 basic_rates);
