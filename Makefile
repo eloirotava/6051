@@ -1,102 +1,21 @@
-KMODULE_NAME=ssv6051
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Out-of-tree build:  make [KVER=<kernel version>] [KDIR=<kernel build dir>]
 
-KBUILD_TOP := $(PWD)
+ssv6051m-y := sdio.o hw.o mac.o tx.o rx.o rc.o ampdu.o ap.o
+obj-m += ssv6051m.o
 
-ifeq ($(KERNELRELEASE),)
+KVER ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KVER)/build
 
-KVERS_UNAME ?= $(shell uname -r)
-KVERS_ARCH ?= $(shell arch)
+all:
+	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
 
-KBUILD ?= $(shell readlink -f /lib/modules/$(KVERS_UNAME)/build)
-
-ifeq (,$(KBUILD))
-$(error kernel build tree not found - set KBUILD to configured kernel)
-endif
-
-#KCONFIG := $(KBUILD)/config
-#ifeq (,$(wildcard $(KCONFIG)))
-#$(error No .config found in $(KBUILD), set KBUILD to configured kernel)
-#endif
-
-ifneq (,$(wildcard $(KBUILD)/include/linux/version.h))
-ifneq (,$(wildcard $(KBUILD)/include/generated/uapi/linux/version.h))
-$(error Multiple copied of version.h found, clean build tree)
-endif
-endif
-
-# Kernel Makefile doesn't always know the exact kernel version, so we
-# get it from the kernel headers instead and pass it to make.
-VERSION_H := $(KBUILD)/include/generated/utsrelease.h
-ifeq (,$(wildcard $(VERSION_H)))
-VERSION_H := $(KBUILD)/include/linux/utsrelease.h
-endif
-ifeq (,$(wildcard $(VERSION_H)))
-VERSION_H := $(KBUILD)/include/linux/version.h
-endif
-ifeq (,$(wildcard $(VERSION_H)))
-$(error Please run 'make modules_prepare' in $(KBUILD))
-endif
-
-KVERS := $(shell sed -ne 's/"//g;s/^\#define UTS_RELEASE //p' $(VERSION_H))
-
-ifeq (,$(KVERS))
-$(error Cannot find UTS_RELEASE in $(VERSION_H), please report)
-endif
-
-INST_DIR = /lib/modules/$(KVERS)/misc
-
-#include $(KCONFIG)
-
-endif
-
-include $(KBUILD_TOP)/platform-config.mak
-
-EXTRA_CFLAGS := -I$(src) -I$(src)/include -Os
-DEF_PARSER_H = $(KBUILD_TOP)/include/ssv_conf_parser.h
-
-OBJS := ssvdevice/ssvdevice.c \
-	ssvdevice/ssv_cmd.c \
-	hci/ssv_hci.c \
-	smac/init.c \
-	smac/dev.c \
-	smac/ssv_rc.c \
-	smac/ssv_ht_rc.c \
-	smac/ap.c \
-	smac/ampdu.c \
-	smac/efuse.c \
-	smac/ssv_pm.c \
-	smac/sar.c \
-	hwif/sdio/sdio.c \
-	ssv6051-generic-wlan.c
-
-
-
-
-$(KMODULE_NAME)-y += $(ASMS:.S=.o)
-$(KMODULE_NAME)-y += $(OBJS:.c=.o)
-
-obj-$(CONFIG_SSV6200_CORE) += $(KMODULE_NAME).o
-
-all: modules
-
-modules:
-	$(MAKE) -C $(KBUILD) M=$(KBUILD_TOP)
-	strip --strip-unneeded $(KMODULE_NAME).ko
+install: all
+	install -D -m 644 ssv6051m.ko $(DESTDIR)/lib/modules/$(KVER)/updates/ssv6051m.ko
+	install -D -m 644 ssv6051-sw.bin $(DESTDIR)/lib/firmware/ssv6051-sw.bin
+	[ -n "$(DESTDIR)" ] || depmod -a $(KVER)
 
 clean:
-	find -type f -iname '*.o' -exec rm {} \;
-	find -type f -iname '*.o.cmd' -exec rm {} \;
-	rm -f *.o *.ko .*.cmd *.mod.c *.symvers modules.order ssv6051.mod
-	rm -rf .tmp_versions
+	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 
-install: modules
-	mkdir -p -m 755 $(DESTDIR)$(INST_DIR)
-	install -m 0644 $(KMODULE_NAME).ko $(DESTDIR)$(INST_DIR)
-ifndef DESTDIR
-	-/sbin/depmod -a $(KVERS)
-endif
-
-.PHONY: all modules clean install
-
-ccflags-y += -I$(src)/include -I$(src)/hci -I$(src)/smac -I$(src)/hwif/sdio -I$(src)/ssvdevice
-ccflags-y += -I$(src)
+.PHONY: all install clean

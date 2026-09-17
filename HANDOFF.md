@@ -1,8 +1,10 @@
 # Driver mínimo SSV6051 (`ssv6051m`): instruções para continuar
 
 Este arquivo é para quem (humano ou agente, ex.: Codex) continuar o
-trabalho no driver novo em `mini/`. **Escopo: só o `mini/`.** O driver
-legado (resto do repositório) é só referência para ler, não mexer.
+trabalho no driver novo (branch `mini`, driver na raiz do repositório;
+instruções de compilação no `README.md`). O driver legado do fabricante
+fica nas branches `main`, `robustez` e `limpeza`: só referência para
+ler, não mexer.
 
 ## Objetivo
 
@@ -144,7 +146,7 @@ Compilar no rk e recarregar (`/root/ssvref/tools/mini-reload.sh`):
 #!/bin/sh
 # Compila o mini no rk e recarrega. Uso: mini-reload.sh [params]
 MKFLAGS="${MKFLAGS:-}"
-cd /root/ssvref/6051-mini && tar -cf - mini | ssh root@10.8.0.12 "MKFLAGS='$MKFLAGS'; rm -rf /root/mini-build && mkdir -p /root/mini-build && tar -x -C /root/mini-build && cd /root/mini-build/mini && make KVER=6.18.44-current-rockchip -j2 $MKFLAGS 2>&1 | grep -E 'error|warning' | grep -v 'compiler differs'
+cd /root/ssvref/6051-mini && git ls-files | tar -cf - --transform 's,^,mini/,' -T - | ssh root@10.8.0.12 "MKFLAGS='$MKFLAGS'; rm -rf /root/mini-build && mkdir -p /root/mini-build && tar -x -C /root/mini-build && cd /root/mini-build/mini && make KVER=6.18.44-current-rockchip -j2 $MKFLAGS 2>&1 | grep -E 'error|warning' | grep -v 'compiler differs'
 rmmod ssv6051m 2>/dev/null; rmmod ssv6051 2>/dev/null; sleep 1; dmesg -C
 insmod ssv6051m.ko tx_gain=14 sdio_clock_hz=50000000 $* || exit 1
 sleep 3; systemctl restart netplan-wpa-wlan0

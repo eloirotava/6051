@@ -1,66 +1,100 @@
-# SSV6051P (and SSV6030P) WiFi Driver
+# ssv6051m: driver Linux para o Wi-Fi SSV6051P (SDIO)
 
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential linux-headers-$(uname -r) git
+Driver mínimo, escrito do zero para o mac80211, para o chip iComm/SSV
+SSV6051P usado em TV boxes (RK322x, S905W e similares). Substitui o driver
+do fabricante (`ssv6051.ko` + `ssv6051-wifi.cfg`).
+
+- **modos:** cliente (WPA2-PSK, WPA2-Enterprise/PEAP) e hotspot (AP com
+  `hostapd`), um de cada vez;
+- **rádio:** 802.11b/g/n em 2,4 GHz, HT20 com short GI (até MCS7);
+- **agregação:** AMPDU no envio e na recepção;
+- **plataformas:** 32 e 64 bits, sem arquivo `.cfg`;
+- **testado em:** kernel 6.18 (Armbian, RK3228).
+
+## Arquivos
+
+| arquivo | conteúdo |
+|---|---|
+| `Makefile` | compilação fora da árvore do kernel e instalação |
+| `sdio.c` | barramento SDIO, firmware, probe, parâmetros do módulo |
+| `hw.c` | inicialização do chip, canal, calibração, beacon |
+| `mac.c` | interface com o mac80211 |
+| `tx.c`, `rx.c` | envio e recepção |
+| `rc.c` | controle de taxa |
+| `ampdu.c` | agregação no envio |
+| `ap.c` | modo hotspot |
+| `ssv6051.h`, `reg.h`, `aux.h`, `tables.h` | definições e tabelas do chip |
+| `ssv6051-sw.bin` | firmware do chip (vai para `/lib/firmware`) |
+| `HANDOFF.md` | notas de desenvolvimento para quem continuar o trabalho |
+
+## Compilar
+
+Você precisa dos headers do kernel em execução e das ferramentas de
+compilação. No Debian/Armbian:
+
+```sh
+sudo apt install build-essential linux-headers-$(uname -r)
 ```
 
-# Compilation
+No Armbian, os headers vêm no pacote `linux-headers-<branch>-<família>`,
+por exemplo `linux-headers-current-rockchip`.
 
-```bash
-git clone https://github.com/eloirotava/6051.git
-cd 6051
+Depois, na pasta do driver:
+
+```sh
 make
 ```
 
-Em placas com 1 GB de RAM, prefira `make -j2`.
-Para compilar para outro kernel instalado: `make KVERS_UNAME=<versao>`.
+O resultado é o `ssv6051m.ko`. Para outro kernel ou compilação cruzada:
 
-## 📥 Installation
-
-```bash
-sudo cp ./ssv6051-wifi.cfg /lib/firmware/
-sudo cp ./ssv6051-sw.bin /lib/firmware/
-sudo cp ./ssv6051.ko /lib/modules/$(uname -r)/kernel/drivers/net/wireless/
-sudo depmod -a
-sudo modprobe ssv6051
+```sh
+make KVER=6.18.44-current-rockchip
+make KDIR=/caminho/do/kernel ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
 ```
 
-## ⚙️ Configuração
+## Instalar
 
-### `/lib/firmware/ssv6051-wifi.cfg`
-
-Lido a cada carga do módulo. Chaves mais relevantes:
-
-| Chave | Padrão no arquivo | Observação |
-| --- | --- | --- |
-| `sdio_clock_hz` | `50000000` | Clock SDIO após subir o firmware (que sempre sobe a 25 MHz). Sem a chave: 25 MHz. No RK322x, 50 MHz funciona e 37,5 MHz gera erros de CRC (`-84`). |
-| `hw_cap_ht` | `on` | 802.11n, MCS 0-7 em 20 MHz. |
-| `hw_cap_ampdu_rx` / `hw_cap_ampdu_tx` | `on` | Agregação. O TX agrega no host (um agregado por escrita SDIO). |
-| `wifi_tx_gain_level_b` / `_gn` | `14` | Potência de TX: 1 (maior) a 14 (menor); 0 = padrão do chip. |
-| `volt_regulator` | `1` | 0 = DCDC, 1 = LDO. |
-| `xtal_clock` | `24` | Cristal do módulo (24, 26 ou 40). |
-
-### Parâmetros do módulo
-
-Por exemplo em `/etc/modprobe.d/ssv6051.conf`:
-
-```
-options ssv6051 hw_crypto=1
+```sh
+sudo make install        # módulo em /lib/modules/<kver>/updates, firmware em /lib/firmware
 ```
 
-| Parâmetro | Padrão | Observação |
-| --- | --- | --- |
-| `hw_crypto` | `0` | `1` usa o chip para WPA. Com par HT + AMPDU, o chip só decripta e o mac80211 encripta. Reduz CPU na descida (~23% → ~15% num RK3229). |
-| `sdio_clock_hz` | `0` | Sobrepõe a chave do cfg (útil para testes). |
-| `ssv_initmac` | — | MAC fixo, se o e-fuse não tiver um válido. |
+Se o driver antigo do fabricante estiver instalado, bloqueie-o e configure
+o novo, por exemplo em `/etc/modprobe.d/ssv6051.conf`:
 
-## Resultados (RK3229, kernel 6.18, AP a centímetros)
+```
+blacklist ssv6051
+options ssv6051m tx_gain=14 sdio_clock_hz=50000000 hw_decrypt=0
+```
 
-iperf3 de 60 s contra o roteador:
+Para carregar sem reiniciar:
 
-| Versão | Subida | Descida |
-| --- | --- | --- |
-| port original (HT off, 25 MHz) | 4,2 Mbit/s | 5,0 Mbit/s |
-| + HT/AMPDU | 8,4 Mbit/s | 10,2 Mbit/s |
-| + SDIO 50 MHz | 9,4 Mbit/s | 12,8 Mbit/s |
+```sh
+sudo modprobe -r ssv6051 ssv6051m
+sudo modprobe ssv6051m
+```
+
+No boot, o módulo é carregado automaticamente pelo ID SDIO (3030:3030).
+
+## Parâmetros
+
+| parâmetro | padrão | significado | propriedade de DT |
+|---|---|---|---|
+| `xtal_mhz` | 24 | cristal: 24, 26 ou 40 | `ssv,xtal-mhz` |
+| `regulator` | LDO | 0 = DCDC, 1 = LDO | `ssv,dcdc` |
+| `tx_gain` | 0 | potência 1 (máx) a 14 (mín); 0 = padrão do chip | `ssv,tx-gain-level` |
+| `sdio_clock_hz` | 25000000 | clock SDIO após o firmware (50000000 funciona no RK322x; 37500000 não) | `ssv,sdio-clock-hz` |
+| `hw_decrypt` | 1 | o chip decifra o CCMP recebido (menos CPU); com 0, a primeira associação após reboot falhou menos nos testes | — |
+
+## Hotspot
+
+Com `hostapd` (`driver=nl80211`, `hw_mode=g`, `ieee80211n=1`). Cliente e
+hotspot ao mesmo tempo não são possíveis: o chip só aceita um endereço
+MAC. A internet do hotspot precisa vir de outra interface (cabo, por
+exemplo).
+
+## Limitações conhecidas
+
+- Após alguns reboots a quente, a primeira associação pode falhar; o
+  driver detecta e reinicia o chip sozinho (a conexão sai 15-30 s depois).
+- Sem power save 802.11, sem HT40 (o chip é só 20 MHz).
+- Suspend/resume implementado, mas não testado.
