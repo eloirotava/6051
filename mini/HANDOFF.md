@@ -9,10 +9,10 @@ legado (resto do repositório) é só referência para ler, não mexer.
 Driver pequeno, limpo, com cara de mainline, para o SSV6051P em SDIO
 (TV boxes RK322x / S905W):
 
-- modo estação (cliente) apenas: WPA2-PSK, WPA2-Enterprise/PEAP (a
-  criptografia é por software no mac80211, então PEAP/eduroam funciona sem
-  nada especial);
-- **AP/hotspot ficou fora de propósito** (decisão do dono do projeto);
+- modo estação (cliente): WPA2-PSK, WPA2-Enterprise/PEAP (a cifragem é
+  por software no mac80211, então PEAP/eduroam funciona sem nada especial);
+- modo AP (hotspot) com `hostapd`, uma interface por vez (sem estação e AP
+  simultâneos);
 - funciona em 32 e 64 bits (sem `long` em struct de fio, tudo `__packed`,
   `get/put_unaligned_le*`, buffers DMA-safe para SDIO);
 - **sem arquivo `.cfg`**: configuração por parâmetros de módulo ou por
@@ -26,8 +26,40 @@ Funciona: probe, upload do firmware, calibração, scan, associação WPA2 em
 (sessão de BA no chip) e AMPDU no TX (agregado montado no host, BA
 encaminhado pelo firmware, retentativa pelo host, até 3 agregados em voo
 por TID), decifragem CCMP unicast no chip (`hw_decrypt=1`), suspend/resume
-(só compilado: o rk não tem RTC nem `pm_test`, não dá para testar sem
-acesso físico).
+(só compilado: o rk não tem RTC nem `pm_test`), reinício automático do
+chip quando as associações morrem após reboot a quente, e modo AP (beacon
+no chip, TIM, grupo após DTIM, até 8 estações).
+
+No rk o mini é o **driver do boot** (`/etc/modprobe.d/ssv6051-select.conf`:
+blacklist do legado e `options ssv6051m tx_gain=14 sdio_clock_hz=50000000
+hw_decrypt=0`). Tamanho: ~4.9 mil linhas e `.ko` de 62 kB (strip) contra
+~49 mil linhas / 194 kB do legado original, sem `.cfg`.
+
+### Falha após reboot a quente (investigada, contornada)
+
+Em cerca de metade dos reboots a quente, logo após associar, os frames de
+dados unicast que o chip envia não chegam ao AP (a gerência passa): o
+4-way handshake estoura o tempo (msg2 ou msg4 perdida, visto com trace de
+EAPOL e no log do hostapd do TP-Link). Recarregar o módulo sempre resolve.
+Descartado: governor da CPU, tipo de cifra que sobrou no chip
+(`ADR_SCRT_SET`), sessão RX BA antiga, WSID antigo. Com `hw_decrypt=0` a
+taxa pareceu menor (2/10 contra 4/10 boots precisando de reinício), por
+isso o rk usa 0. Contorno em `mac.c`: duas associações seguidas que
+terminam sem chave (ou sem unicast recebido, em rede aberta) chamam
+`ieee80211_restart_hw()`, e o `start` refaz sleep/reset/RF antes do
+firmware. Resultado: 20/20 boots conectados (10 com `hw_decrypt=1`, 10 com
+0), custando 15-30 s nos boots afetados. Hipótese ainda não testada: o
+reboot notifier estaciona o chip com a interface ativa, enquanto o
+`remove` (que nunca falha) primeiro para o rádio.
+
+### Modo AP
+
+Teste manual no rk: `/root/ap-test/ap.sh start|stop` (hostapd WPA2
+`rk-hotspot` / `rkhotspot123` no canal 11, `192.168.50.1/24`, DHCP e NAT
+pelo systemd-networkd, internet pelo `end0`). Um celular associou, pegou
+IP e fez 10 down / 8 up. Um TP-Link usado como cliente (interface estação
+no mesmo rádio dos APs dele) associou mas descartava os dados recebidos
+("rx drop misc"); não investigado a pedido do dono.
 
 Vazão (iperf3 contra o Cudy, rk a poucos cm do TP-Link, mesmas condições):
 
@@ -50,6 +82,7 @@ compare os dois drivers na mesma janela de tempo.
 | `rx.c` | leitura de frames/eventos, `rx_status`, despacho de BA/NO_BA |
 | `rc.c` | tabela de taxas e controle de taxa (janelas + sondagem) |
 | `ampdu.c` | AMPDU TX |
+| `ap.c` | modo AP: beacon, TIM, frames de grupo após DTIM |
 | `ssv6051.h` | structs de fio, estado do driver, protótipos |
 | `reg.h`, `aux.h`, `tables.h` | registradores e tabelas de init herdadas do fabricante |
 
@@ -78,9 +111,11 @@ Tudo a partir da VPS (onde está o clone `/root/ssvref/6051` e o worktree
 - O WireGuard do rk sai pelo **cabo** (`end0`, 192.168.1.163), então
   derrubar o `wlan0` (192.168.1.181) não corta o acesso. Por isso os testes
   usam `--bind-dev wlan0`; confira com `ip -br a` que o `wlan0` tem IP.
-- No boot o rk carrega o **driver legado** (`updates/ssv6051.ko` + cfg).
-  O mini é carregado à mão (script abaixo). Não troque o padrão de boot sem
-  o ok do dono.
+- No boot o rk carrega o **mini** (`updates/ssv6051m.ko`); o legado
+  continua em `updates/ssv6051.ko`, bloqueado pelo blacklist. Para voltar
+  ao legado: apagar `/etc/modprobe.d/ssv6051-select.conf`.
+- Hoje o dono tem acesso físico (está ao lado da box); não há mais
+  fallback automático no systemd.
 - Não usar `/tmp` compartilhado; use um diretório de trabalho próprio.
 
 ## Ciclo de trabalho
@@ -192,12 +227,15 @@ comentário em `mac.c`), agregados maiores que ~14 kB (sem ganho; e o
 5. **Teste de robustez**: 20 recargas seguidas, scan com tráfego,
    roaming/reassociação, `rmmod` com tráfego, AP sumindo, rekey de PTK
    (a chave no chip é trocada em `set_key`); olhar `dmesg` por WARN/leak.
-6. **Boot pelo mini** (só com ok do dono): instalar em `updates/`,
-   blacklist do legado, 5+ reboots limpos (há `boottest.sh` nas tools).
-7. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
+6. **Causa raiz da falha pós-reboot** (ver acima); testar
+   `/root/ssvref/tools/mini-boottest.sh N` (mostra reinícios por boot).
+7. **AP**: `MORE_DATA` nos frames de grupo em lote, estação+AP
+   simultâneos (duas vifs no mesmo canal), teste com mais clientes, e
+   descobrir por que o TP-Link como cliente descartava os dados.
+8. **Preparar para mainline**: binding de DT (`ssv,*`), `Kconfig`,
    MAINTAINERS, firmware em linux-firmware, nome definitivo do módulo.
 
-Fora do escopo: AP/hotspot, P2P, IBSS, 40 MHz (o chip é HT20), monitor.
+Fora do escopo: P2P, IBSS, 40 MHz (o chip é HT20), monitor.
 
 ## Referências
 
