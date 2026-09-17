@@ -141,8 +141,9 @@ acrescente:
 
 - Logo após o boot, o primeiro handshake WPA às vezes estoura o tempo (a
   última mensagem não chega ao AP); o `wpa_supplicant` refaz sozinho.
-- O chip não informa se cada frame foi confirmado; o envio é reportado
-  ao mac80211 como confirmado.
+- Só os frames de gerência e EAPOL têm confirmação real (o driver lê os
+  contadores do MAC em volta deles) e os agregados, pelo Block Ack; os
+  demais dados são reportados como confirmados.
 - Sem power save 802.11, sem HT40 (o chip é só 20 MHz).
 - Suspend/resume implementado, mas não testado.
 - Partes do código e as tabelas vêm do driver do fabricante, cujos

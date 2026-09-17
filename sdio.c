@@ -111,11 +111,14 @@ static void ssv_sdio_irq(struct sdio_func *func)
 {
 	struct ssv_dev *sd = sdio_get_drvdata(func);
 
-	/* The handler does its own claims; this runs in the SDIO IRQ work. */
-	sdio_release_host(func);
+	/*
+	 * The MMC core calls us with the host claimed and the RX path claims
+	 * it again (nested claims by the same task are fine).  Releasing it
+	 * here instead would let sdio_release_irq() take the host and wait
+	 * for this thread while the thread waits for the host.
+	 */
 	if (sd && sd->started)
 		ssv_rx_irq(sd);
-	sdio_claim_host(func);
 }
 
 int ssv_irq_enable(struct ssv_dev *sd)

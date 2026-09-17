@@ -533,6 +533,9 @@ int ssv_hw_start(struct ssv_dev *sd)
 	if (ret)
 		return ret;
 
+	/* MAC counters: they tell whether a frame got an ACK (tx.c) */
+	ssv_reg_write(sd, ADR_MIB_EN, 0);
+	ssv_reg_write(sd, ADR_MIB_EN, 0xffffffff);
 	sd->rx_ba_sta = NULL;
 	/* a fresh chip has no beacon buffers */
 	memset(sd->bcn_buf, 0, sizeof(sd->bcn_buf));

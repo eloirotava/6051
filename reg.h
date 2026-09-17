@@ -28,6 +28,7 @@
 #define CSR_PHY_BASE				0xce000000
 #define CSR_RF_BASE				0xce010000
 #define MMU_REG_BASE				0xcf000000
+#define MIB_REG_BASE				0xca000800
 
 /* Registers */
 #define ADR_BRG_SW_RST				(SYS_REG_BASE + 0x0)
@@ -118,6 +119,9 @@
 #define ADR_DPLL_FB_DIVIDER_REGISTERS_II	(CSR_RF_BASE + 0xa0)
 #define ADR_SX_LCK_BIN_REGISTERS_II		(CSR_RF_BASE + 0xa4)
 #define ADR_MMU_CTRL				(MMU_REG_BASE + 0x0)
+#define ADR_MIB_EN				(MIB_REG_BASE + 0x0)
+#define ADR_MTX_FAIL				(MIB_REG_BASE + 0x170)
+#define ADR_MTX_FRM				(MIB_REG_BASE + 0x188)
 
 /* Register fields */
 #define MAC_SW_RST_SFT				1

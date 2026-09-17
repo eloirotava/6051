@@ -353,6 +353,7 @@ int ssv_mac_register(struct ssv_dev *sd)
 	ieee80211_hw_set(hw, HAS_RATE_CONTROL);
 	ieee80211_hw_set(hw, MFP_CAPABLE);
 	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
+	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
 	hw->max_rx_aggregation_subframes = 16;
 	hw->queues = IEEE80211_NUM_ACS;
 	hw->extra_tx_headroom = SSV_TX_DESC_LEN;
