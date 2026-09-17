@@ -37,7 +37,7 @@ static struct sk_buff *ssv_read_frame(struct ssv_dev *sd)
 	if (ret)
 		goto out;
 	aligned = sdio_align_size(func, len);
-	if (len < sizeof(struct ssv_host_event) || aligned > SSV_MAX_FRAME) {
+	if (len < sizeof(struct ssv_host_hdr) || aligned > SSV_MAX_FRAME) {
 		dev_err_ratelimited(sd->dev, "bogus RX length %u\n", len);
 		goto out;
 	}
@@ -59,11 +59,12 @@ out:
 
 static void ssv_rx_event(struct ssv_dev *sd, struct sk_buff *skb)
 {
-	struct ssv_host_event *ev = (struct ssv_host_event *)skb->data;
+	struct ssv_host_hdr *ev = (struct ssv_host_hdr *)skb->data;
+	u32 id = le32_get_bits(ev->w0, HDR0_ID);
 
-	switch (ev->h_event) {
+	switch (id) {
 	case SSV_EVT_TXLOOPBK_RESULT:
-		sd->cali_state = ev->seq_no == 0 ? 1 : -1;
+		sd->cali_state = le32_to_cpu(ev->seq) == 0 ? 1 : -1;
 		wake_up(&sd->cali_wait);
 		break;
 	case SSV_EVT_NO_BA:
@@ -75,7 +76,6 @@ static void ssv_rx_event(struct ssv_dev *sd, struct sk_buff *skb)
 		break;
 	default:
 		/* watchdog ticks, AMPDU/BA notifications, logs */
-		dev_dbg(sd->dev, "event %u len %u\n", ev->h_event, skb->len);
 		break;
 	}
 	dev_kfree_skb(skb);
@@ -100,52 +100,36 @@ static void ssv_rx_rate(struct ieee80211_rx_status *rxs, unsigned int rate)
 	rxs->rate_idx = r->dot11;
 }
 
-/* frames from @wsid were decrypted by the chip */
-static bool ssv_rx_decrypted(struct ssv_dev *sd, unsigned int wsid)
-{
-	struct ieee80211_sta *sta;
-	bool ret = false;
-
-	if (wsid >= SSV_NUM_HW_STA)
-		return false;
-	rcu_read_lock();
-	sta = rcu_dereference(sd->sta[wsid]);
-	if (sta)
-		ret = READ_ONCE(((struct ssv_sta *)sta->drv_priv)->rx_decrypt);
-	rcu_read_unlock();
-	return ret;
-}
-
 static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 {
 	struct ssv_rx_desc *rxd = (struct ssv_rx_desc *)skb->data;
 	struct ssv_rxphy_info *phy = (struct ssv_rxphy_info *)(rxd + 1);
 	struct ieee80211_rx_status *rxs = IEEE80211_SKB_RXCB(skb);
 	struct ieee80211_hdr *hdr;
-	unsigned int wsid = rxd->wsid;
+	u32 rate;
 	int rpci;
 
 	if (skb->len < SSV_RX_DESC_LEN + RX_PINFO_PAD + 10) {
 		dev_kfree_skb(skb);
 		return;
 	}
+	rate = le32_get_bits(rxd->w3, RXD3_RATE_IDX);
 
 	memset(rxs, 0, sizeof(*rxs));
-	ssv_rx_rate(rxs, rxd->rate_idx);
+	ssv_rx_rate(rxs, rate);
 	rxs->band = NL80211_BAND_2GHZ;
 	rxs->freq = ieee80211_channel_to_frequency(sd->channel, NL80211_BAND_2GHZ);
 
 	/* CCK frames carry the PHY info in the trailing 4 bytes */
-	if (rxd->rate_idx < SSV_RATE_OFDM) {
-		struct ssv_rxphy_pad *pad = (struct ssv_rxphy_pad *)
-			(skb->data + skb->len - sizeof(*pad));
+	if (rate < SSV_RATE_OFDM) {
+		u32 pad = get_unaligned_le32(skb->data + skb->len - RX_PINFO_PAD);
 
-		rpci = pad->rpci;
+		rpci = FIELD_GET(GENMASK(7, 0), pad);
 	} else {
-		rpci = phy->rpci;
+		rpci = le32_get_bits(phy->w4, RXPHY4_RPCI);
 	}
 	rxs->signal = -min(rpci, 88);
-	if (phy->aggregate)
+	if (le32_get_bits(phy->w1, RXPHY1_AGGREGATE))
 		rxs->flag |= RX_FLAG_NO_SIGNAL_VAL;
 
 	skb_pull(skb, SSV_RX_DESC_LEN);
@@ -161,18 +145,6 @@ static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 	}
 	skb_trim(skb, skb->len - RX_PINFO_PAD);
 
-	if (ieee80211_has_protected(hdr->frame_control) &&
-	    ieee80211_is_data(hdr->frame_control) &&
-	    !is_multicast_ether_addr(hdr->addr1) &&
-	    ssv_rx_decrypted(sd, wsid)) {
-		/*
-		 * The chip removes the CCMP header and MIC.  The PN is gone
-		 * with it, so there is no replay check on these frames
-		 * (the vendor driver behaves the same).
-		 */
-		rxs->flag |= RX_FLAG_DECRYPTED | RX_FLAG_IV_STRIPPED |
-			     RX_FLAG_MIC_STRIPPED;
-	}
 	/* the chip clock is not the TSF; keep mac80211's beacon timing sane */
 	if (ieee80211_is_beacon(hdr->frame_control) ||
 	    ieee80211_is_probe_resp(hdr->frame_control)) {
@@ -187,6 +159,7 @@ static void ssv_rx_frame(struct ssv_dev *sd, struct sk_buff *skb)
 
 void ssv_rx_irq(struct ssv_dev *sd)
 {
+	struct ssv_rx_desc *rxd;
 	u8 status;
 	int n = 0;
 
@@ -199,7 +172,8 @@ void ssv_rx_irq(struct ssv_dev *sd)
 		if (!skb)
 			break;
 		n++;
-		if (((struct ssv_rx_desc *)skb->data)->c_type == HOST_EVENT)
+		rxd = (struct ssv_rx_desc *)skb->data;
+		if (le32_get_bits(rxd->w0, RXD0_C_TYPE) == HOST_EVENT)
 			ssv_rx_event(sd, skb);
 		else
 			ssv_rx_frame(sd, skb);

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config SSV6051
+	tristate "South Silicon Valley SSV6051 SDIO wireless support"
+	depends on MAC80211 && MMC
+	help
+	  This driver supports the South Silicon Valley (iComm) SSV6051
+	  802.11b/g/n SDIO chip found in many TV boxes, in station and
+	  access point mode.
+
+	  It needs the firmware file ssv/ssv6051-sw.bin.
+
+	  If you choose to build a module, it'll be called ssv6051.

@@ -150,11 +150,13 @@ static void ssv_rc_select(struct ssv_rc *rc)
 void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 {
 	struct ieee80211_sta *sta;
-	struct ssv_rc *rc;
+	u32 acked = le16_to_cpu(rpt->ampdu_ack_len);
+	u32 count = rpt->rates[0].count;
 	int rate = rpt->rates[0].data_rate;
+	struct ssv_rc *rc;
 	int i;
 
-	if (rpt->wsid >= SSV_NUM_STA || rate < 0 || !rpt->rates[0].count)
+	if (rpt->wsid >= SSV_NUM_STA || rate < 0 || !count)
 		return;
 	/* reports name the long-preamble CCK rate */
 	if (rate > 3 && rate < SSV_RATE_OFDM)
@@ -175,13 +177,12 @@ void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 			r -= 3;
 		if (r != rate)
 			continue;
-		p = min_t(u32, rpt->ampdu_ack_len, rpt->rates[0].count) * RC_SCALE /
-		    rpt->rates[0].count;
+		p = min(acked, count) * RC_SCALE / count;
 		rc->prob[i] = rc->sampled[i] ? (rc->prob[i] * 3 + p) / 4 : p;
 		rc->sampled[i] = true;
 		ssv_rc_select(rc);
 		dev_dbg(sd->dev, "rc: rate %u %u/%u/%u -> p %u, cur %u (rate %u)\n",
-			r, rpt->ampdu_ack_len, rpt->ampdu_len, rpt->rates[0].count,
+			r, acked, le16_to_cpu(rpt->ampdu_len), count,
 			rc->prob[i], rc->cur, rc->rate[rc->cur]);
 		break;
 	}

@@ -67,15 +67,16 @@ void ssv_ap_update_beacon(struct ssv_dev *sd)
 
 	rate = ssv_ap_beacon_rate(vif);
 	d = (struct ssv_tx_desc *)buf;
-	d->len = skb->len;
-	d->c_type = M2_TXREQ;
-	d->f80211 = 1;
-	d->ack_policy = 1;
-	d->hdr_offset = TXPB_OFFSET;
-	d->hdr_len = 24;
-	d->payload_offset = TXPB_OFFSET + 24;
-	d->drate_idx = rate;
-	d->crate_idx = ssv_rates[rate].ctrl;
+	/* for a beacon the length excludes the descriptor */
+	le32p_replace_bits(&d->w0, skb->len, TXD0_LEN);
+	le32p_replace_bits(&d->w0, M2_TXREQ, TXD0_C_TYPE);
+	le32p_replace_bits(&d->w0, 1, TXD0_F80211);
+	le32p_replace_bits(&d->w2, 1, TXD2_ACK_POLICY);
+	le32p_replace_bits(&d->w2, TXPB_OFFSET, TXD2_HDR_OFFSET);
+	le32p_replace_bits(&d->w2, 24, TXD2_HDR_LEN);
+	le32p_replace_bits(&d->w3, TXPB_OFFSET + 24, TXD3_PAYLOAD_OFFSET);
+	le32p_replace_bits(&d->w5, rate, TXD5_DRATE);
+	le32p_replace_bits(&d->w4, ssv_rates[rate].ctrl, TXD4_CRATE);
 	memcpy(buf + SSV_TX_DESC_LEN, skb->data, skb->len);
 
 	if (sd->bcn_last && sd->bcn_last_len == len &&

@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/wireless/ssv,ssv6051.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: South Silicon Valley SSV6051 SDIO wireless LAN
+
+maintainers:
+  - Eloi Rotava <eloi@rotava.com>
+
+description:
+  The SSV6051 is a 2.4 GHz 802.11b/g/n chip with an SDIO interface.  The
+  node describes SDIO function 1 and is a child of the MMC host.  All
+  properties are optional; without them the driver assumes a 24 MHz
+  crystal, the internal LDO, the default transmit power and a 25 MHz bus.
+
+properties:
+  compatible:
+    const: ssv,ssv6051
+
+  reg:
+    description: SDIO function number.
+    const: 1
+
+  ssv,xtal-hz:
+    description: Frequency of the crystal on the module.
+    enum: [24000000, 26000000, 40000000]
+    default: 24000000
+
+  ssv,dcdc:
+    type: boolean
+    description:
+      The chip is supplied through its DC-DC converter instead of the
+      internal LDO.
+
+  ssv,tx-gain-level:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Transmit power level, from 1 (highest) to 14 (lowest).  Without it
+      the chip default is used.
+    minimum: 1
+    maximum: 14
+
+  ssv,sdio-max-clock-hz:
+    description:
+      SDIO clock used once the firmware runs; the firmware is always
+      loaded at 25 MHz.  Limited by the host's own maximum.
+    default: 25000000
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    mmc {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        wifi@1 {
+            compatible = "ssv,ssv6051";
+            reg = <1>;
+            ssv,tx-gain-level = <14>;
+            ssv,sdio-max-clock-hz = <50000000>;
+        };
+    };

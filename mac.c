@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * SSV6051 mac80211 glue: capabilities and callbacks (station mode).
+ * SSV6051 mac80211 glue: capabilities and callbacks.
  */
 #include <linux/etherdevice.h>
 
@@ -246,7 +246,6 @@ static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		return -ENOSPC;
 	}
 	ss->wsid = wsid;
-	ss->rx_decrypt = false;
 	ssv_agg_init(ss);
 	spin_lock_bh(&sd->sta_lock);
 	ssv_rc_init(sd, sta);
@@ -270,10 +269,6 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	if (sd->rx_ba_sta == sta) {
 		ssv_rx_ba_session(sd, NULL, 0, 0);
 		sd->rx_ba_sta = NULL;
-	}
-	if (ss->rx_decrypt) {
-		ss->rx_decrypt = false;
-		ssv_set_rx_key(sd, ss->wsid, sta->addr, NULL);
 	}
 	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_STA &&
 	    rcu_access_pointer(sd->sta[ss->wsid]) == sta) {
@@ -310,34 +305,18 @@ static int ssv_sta_state(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 }
 
 /*
- * The chip cannot encrypt aggregates built by the host, so mac80211 keeps
- * the keys (and encrypts); the chip only decrypts unicast CCMP on receive,
- * which is where most of the CPU goes.
+ * All crypto is done by mac80211 (the chip cannot encrypt aggregates built
+ * by the host).  Keys are only watched to tell a working association from
+ * a dead one.
  */
 static int ssv_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 		       struct ieee80211_vif *vif, struct ieee80211_sta *sta,
 		       struct ieee80211_key_conf *key)
 {
 	struct ssv_dev *sd = hw->priv;
-	struct ssv_sta *ss;
 
-	if (vif->type != NL80211_IFTYPE_STATION)
-		return -EOPNOTSUPP;
-	if (cmd == SET_KEY && sta)
+	if (vif->type == NL80211_IFTYPE_STATION && cmd == SET_KEY && sta)
 		sd->assoc_keyed = true;
-	if (!sd->hw_decrypt || !sta || key->cipher != WLAN_CIPHER_SUITE_CCMP ||
-	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
-		return -EOPNOTSUPP;
-	ss = (struct ssv_sta *)sta->drv_priv;
-
-	mutex_lock(&sd->mutex);
-	if (ss->wsid >= 0) {
-		/* stop marking frames while the key changes under them */
-		WRITE_ONCE(ss->rx_decrypt, false);
-		ssv_set_rx_key(sd, ss->wsid, sta->addr, cmd == SET_KEY ? key : NULL);
-		WRITE_ONCE(ss->rx_decrypt, cmd == SET_KEY);
-	}
-	mutex_unlock(&sd->mutex);
 	return -EOPNOTSUPP;
 }
 

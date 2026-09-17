@@ -16,34 +16,16 @@
 
 #include "ssv6051.h"
 
-#define SSV_SDIO_VENDOR		0x3030
-#define SSV_SDIO_DEVICE		0x3030
+#ifndef SDIO_VENDOR_ID_SSV
+#define SDIO_VENDOR_ID_SSV		0x3030
+#define SDIO_DEVICE_ID_SSV_6051		0x3030
+#endif
 
 #define FW_BLOCK_SIZE		0x8000
 #define FW_CHECKSUM_BLOCK	1024
 #define FW_CHECKSUM_INIT	0x12345678
 #define FW_STATUS_MASK		0x00ff0000
 #define IO_BUF_SIZE		16
-
-static uint xtal_mhz = 24;
-module_param(xtal_mhz, uint, 0444);
-MODULE_PARM_DESC(xtal_mhz, "Crystal frequency: 24, 26 or 40 (default 24; DT: ssv,xtal-mhz)");
-
-static int regulator = -1;
-module_param(regulator, int, 0444);
-MODULE_PARM_DESC(regulator, "0 = DCDC, 1 = LDO (default LDO; DT: ssv,dcdc)");
-
-static bool hw_decrypt = true;
-module_param(hw_decrypt, bool, 0444);
-MODULE_PARM_DESC(hw_decrypt, "Decrypt received unicast CCMP frames in the chip");
-
-static uint tx_gain;
-module_param(tx_gain, uint, 0444);
-MODULE_PARM_DESC(tx_gain, "TX power level 1 (max) .. 14 (min), 0 = chip default (DT: ssv,tx-gain-level)");
-
-static uint sdio_clock_hz;
-module_param(sdio_clock_hz, uint, 0444);
-MODULE_PARM_DESC(sdio_clock_hz, "SDIO clock after firmware load, Hz (default 25000000; DT: ssv,sdio-clock-hz)");
 
 /*
  * Register access goes through the "register port": write the address
@@ -97,8 +79,10 @@ int ssv_reg_set_bits(struct ssv_dev *sd, u32 addr, u32 set, u32 mask)
 	return ssv_reg_write(sd, addr, (val & ~mask) | (set & mask));
 }
 
-/* Frames and host commands.  @buf must be DMA-safe and padded to the
- * SDIO block alignment (see sdio_align_size()). */
+/*
+ * Frames and host commands.  @buf must be DMA-safe and padded to the
+ * SDIO block alignment (see sdio_align_size()).
+ */
 int ssv_write_data(struct ssv_dev *sd, const u8 *buf, size_t len)
 {
 	struct sdio_func *func = sd->func;
@@ -290,22 +274,20 @@ static void ssv_pmu_wakeup(struct ssv_dev *sd)
 /* Firmware "power save" command: parks the MCU until the next wakeup. */
 static void ssv_pmu_sleep(struct ssv_dev *sd)
 {
-	struct ssv_host_cmd *cmd;
+	struct ssv_host_hdr *cmd;
 	size_t len = sizeof(*cmd);
-	u8 *buf;
 
-	buf = kzalloc(sdio_align_size(sd->func, len), GFP_KERNEL);
-	if (!buf)
+	cmd = kzalloc(sdio_align_size(sd->func, len), GFP_KERNEL);
+	if (!cmd)
 		return;
 	ssv_reg_write(sd, ADR_RX_FLOW_MNG, M_ENG_MACRX | (M_ENG_TRASH_CAN << 4));
 	ssv_reg_write(sd, ADR_RX_FLOW_DATA, M_ENG_MACRX | (M_ENG_TRASH_CAN << 4));
 	ssv_reg_write(sd, ADR_RX_FLOW_CTRL, M_ENG_MACRX | (M_ENG_TRASH_CAN << 4));
-	cmd = (struct ssv_host_cmd *)buf;
-	cmd->c_type = HOST_CMD;
-	cmd->h_cmd = SSV_CMD_PS;
-	cmd->len = len;
-	ssv_write_data(sd, buf, len);
-	kfree(buf);
+	le32p_replace_bits(&cmd->w0, len, HDR0_LEN);
+	le32p_replace_bits(&cmd->w0, HOST_CMD, HDR0_C_TYPE);
+	le32p_replace_bits(&cmd->w0, SSV_CMD_PS, HDR0_ID);
+	ssv_write_data(sd, (u8 *)cmd, len);
+	kfree(cmd);
 }
 
 /*
@@ -320,7 +302,7 @@ static void ssv_reset_chip(struct ssv_dev *sd)
 	ssv_pmu_sleep(sd);
 	msleep(50);
 	ssv_pmu_wakeup(sd);
-	msleep(10);
+	usleep_range(10000, 20000);
 }
 
 static int ssv_sdio_init(struct ssv_dev *sd)
@@ -378,6 +360,10 @@ int ssv_chip_reinit(struct ssv_dev *sd, bool running)
 	return ssv_hw_probe(sd);
 }
 
+/*
+ * Board description from the SDIO function's device tree node (see
+ * Documentation/devicetree/bindings/net/wireless/ssv,ssv6051.yaml).
+ */
 static void ssv_read_board_config(struct ssv_dev *sd)
 {
 	struct device_node *np = sd->dev->of_node;
@@ -385,40 +371,35 @@ static void ssv_read_board_config(struct ssv_dev *sd)
 
 	sd->xtal = SSV_XTAL_24M;
 	sd->ldo = true;
-	sd->tx_gain_b = sd->tx_gain_gn = 0;
+	sd->tx_gain_b = 0;
+	sd->tx_gain_gn = 0;
 	sd->sdio_clock = SDIO_CLOCK_FW;
+	if (!np)
+		return;
 
-	if (np) {
-		if (!of_property_read_u32(np, "ssv,xtal-mhz", &val))
-			xtal_mhz = val;
-		if (of_property_read_bool(np, "ssv,dcdc"))
-			sd->ldo = false;
-		if (!of_property_read_u32(np, "ssv,tx-gain-level", &val))
-			sd->tx_gain_b = sd->tx_gain_gn = val;
-		if (!of_property_read_u32(np, "ssv,sdio-clock-hz", &val))
-			sd->sdio_clock = val;
+	if (!of_property_read_u32(np, "ssv,xtal-hz", &val)) {
+		switch (val) {
+		case 24000000:
+			sd->xtal = SSV_XTAL_24M;
+			break;
+		case 26000000:
+			sd->xtal = SSV_XTAL_26M;
+			break;
+		case 40000000:
+			sd->xtal = SSV_XTAL_40M;
+			break;
+		default:
+			dev_warn(sd->dev, "unsupported crystal %u Hz, using 24 MHz\n", val);
+		}
 	}
-
-	switch (xtal_mhz) {
-	case 26:
-		sd->xtal = SSV_XTAL_26M;
-		break;
-	case 40:
-		sd->xtal = SSV_XTAL_40M;
-		break;
-	case 24:
-		sd->xtal = SSV_XTAL_24M;
-		break;
-	default:
-		dev_warn(sd->dev, "unsupported crystal %u MHz, using 24\n", xtal_mhz);
+	if (of_property_read_bool(np, "ssv,dcdc"))
+		sd->ldo = false;
+	if (!of_property_read_u32(np, "ssv,tx-gain-level", &val)) {
+		sd->tx_gain_b = val;
+		sd->tx_gain_gn = val;
 	}
-	if (regulator >= 0)
-		sd->ldo = regulator;
-	sd->hw_decrypt = hw_decrypt;
-	if (tx_gain)
-		sd->tx_gain_b = sd->tx_gain_gn = tx_gain;
-	if (sdio_clock_hz)
-		sd->sdio_clock = sdio_clock_hz;
+	if (!of_property_read_u32(np, "ssv,sdio-max-clock-hz", &val))
+		sd->sdio_clock = val;
 }
 
 static struct sdio_func *ssv_reboot_func;
@@ -535,7 +516,7 @@ static int ssv_sdio_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(ssv_sdio_pm, ssv_sdio_suspend, ssv_sdio_resume);
 
 static const struct sdio_device_id ssv_sdio_ids[] = {
-	{ SDIO_DEVICE(SSV_SDIO_VENDOR, SSV_SDIO_DEVICE) },
+	{ SDIO_DEVICE(SDIO_VENDOR_ID_SSV, SDIO_DEVICE_ID_SSV_6051) },
 	{ }
 };
 MODULE_DEVICE_TABLE(sdio, ssv_sdio_ids);
@@ -570,6 +551,6 @@ static void __exit ssv_exit(void)
 module_init(ssv_init);
 module_exit(ssv_exit);
 
-MODULE_DESCRIPTION("SSV6051 SDIO 802.11n driver (station mode)");
+MODULE_DESCRIPTION("South Silicon Valley SSV6051 SDIO 802.11n driver");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE(SSV_FIRMWARE);

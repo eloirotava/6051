@@ -342,6 +342,7 @@ static const u16 deci_tbl[] = {
 	DECI(0x00, 0x00, DECI_ACK, 1),
 	0x2008, 0x1001, 0x0400, 0x0400, 0x2000, 0x800E, 0x0800, 0x0B88, 0x0800,
 };
+
 #define DECI_TBL1_SIZE	16
 #define DECI_TBL2_SIZE	9
 
@@ -393,6 +394,7 @@ struct ssv_chan_cal {
 	u32 rf_ctrl_f;
 	u16 precision;
 };
+
 static const struct ssv_chan_cal chan_cal[3][14] = {
 	{ {0xB9, 0x89D89E, 3859}, {0xB9, 0xEC4EC5, 3867}, {0xBA, 0x4EC4EC, 3875},
 	  {0xBA, 0xB13B14, 3883}, {0xBB, 0x13B13B, 3891}, {0xBB, 0x762762, 3899},

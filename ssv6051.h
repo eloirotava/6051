@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Minimal mac80211 driver for the South Silicon Valley SSV6051 SDIO
- * 802.11b/g/n chip (station mode only, software crypto).
+ * mac80211 driver for the South Silicon Valley SSV6051 SDIO 802.11b/g/n
+ * chip (station and access point, software crypto).
  *
  * Hardware interface derived from the iComm vendor driver:
  * Copyright (c) 2015 South Silicon Valley Microelectronics Inc.
@@ -10,6 +10,8 @@
 #ifndef SSV6051_H
 #define SSV6051_H
 
+#include <linux/bitfield.h>
+#include <linux/etherdevice.h>
 #include <linux/types.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -19,9 +21,8 @@
 #include <net/mac80211.h>
 
 #include "reg.h"
-#include "aux.h"
 
-#define SSV_FIRMWARE		"ssv6051-sw.bin"
+#define SSV_FIRMWARE		"ssv/ssv6051-sw.bin"
 
 /* SDIO function 1 registers (CMD52) */
 #define SDIO_REG_DATA_PORT0	0x00
@@ -108,7 +109,7 @@ enum ssv_event {
 	SSV_EVT_TXLOOPBK_RESULT = 10,
 };
 
-#define SSV_TXREPORT_RC		2	/* tx_desc.RSVD_0 value asking for an RC report */
+#define SSV_TXREPORT_RC		2	/* TXD_REPORT_TYPE asking for an RC report */
 
 enum ssv_wsid_op {
 	SSV_WSID_OP_ADD = 0,
@@ -116,160 +117,107 @@ enum ssv_wsid_op {
 	SSV_WSID_OP_PAIRWISE_SET_TYPE = 5,
 	SSV_WSID_OP_GROUP_SET_TYPE = 6,
 };
+
 #define SSV_WSID_SEC_SW		0
 
 #define SSV_OPMODE_STA		0
 #define SSV_OPMODE_AP		1
-#define SSV_WSID_SEC_HW		1
-
-/* ADR_SCRT_SET cipher types */
-#define SSV_SEC_NONE		0
-#define SSV_SEC_CCMP		4
 
 /*
- * Wire formats.  All little-endian, bitfields allocated LSB first; GCC
- * lays these out identically on arm and arm64.
+ * Wire formats: little-endian 32-bit words.  Field masks are named
+ * <struct><word>_<field>.
  */
-struct ssv_rc_retry {
-	u32 count:4;
-	u32 drate:6;
-	u32 crate:6;
-	u32 rts_cts_nav:16;
-	u32 frame_consume_time:10;
-	u32 dl_length:12;
-	u32 rsvd:10;
-} __packed;
+/* TX descriptor, TXPB_OFFSET bytes in front of every frame */
+#define TXD0_LEN		GENMASK(15, 0)
+#define TXD0_C_TYPE		GENMASK(18, 16)
+#define TXD0_F80211		BIT(19)
+#define TXD0_QOS		BIT(20)
+#define TXD0_USE_4ADDR		BIT(22)
+#define TXD0_REPORT_TYPE	GENMASK(25, 23)
+#define TXD0_MORE_DATA		BIT(28)
+#define TXD0_STYPE_B5B4		GENMASK(30, 29)
+#define TXD2_HDR_OFFSET		GENMASK(7, 0)
+#define TXD2_FRAG		BIT(8)
+#define TXD2_UNICAST		BIT(9)
+#define TXD2_HDR_LEN		GENMASK(15, 10)
+#define TXD2_TX_REPORT		BIT(16)
+#define TXD2_TX_BURST		BIT(17)
+#define TXD2_ACK_POLICY		GENMASK(19, 18)
+#define TXD2_AGGREGATION	BIT(20)
+#define TXD2_AGG_MARK		GENMASK(23, 21)
+#define TXD2_RTS_CTS		GENMASK(25, 24)
+#define TXD3_PAYLOAD_OFFSET	GENMASK(7, 0)
+#define TXD3_WSID		GENMASK(22, 19)
+#define TXD3_TXQ_IDX		GENMASK(25, 23)
+#define TXD4_RTS_CTS_NAV	GENMASK(15, 0)
+#define TXD4_CONSUME_TIME	GENMASK(25, 16)
+#define TXD4_CRATE		GENMASK(31, 26)
+#define TXD5_DRATE		GENMASK(5, 0)
+#define TXD5_DL_LENGTH		GENMASK(17, 6)
 
 #define SSV_TX_MAX_RATES	3
 
-struct ssv_tx_desc {
-	u32 len:16;
-	u32 c_type:3;
-	u32 f80211:1;
-	u32 qos:1;
-	u32 ht:1;
-	u32 use_4addr:1;
-	u32 RSVD_0:3;
-	u32 bc_que:1;
-	u32 security:1;
-	u32 more_data:1;
-	u32 stype_b5b4:2;
-	u32 extra_info:1;
-	u32 fCmd;
-	u32 hdr_offset:8;
-	u32 frag:1;
-	u32 unicast:1;
-	u32 hdr_len:6;
-	u32 tx_report:1;
-	u32 tx_burst:1;
-	u32 ack_policy:2;
-	u32 aggregation:1;
-	u32 RSVD_1:3;
-	u32 do_rts_cts:2;
-	u32 reason:6;
-	u32 payload_offset:8;
-	u32 RSVD_4:7;
-	u32 RSVD_2:1;
-	u32 fCmdIdx:3;
-	u32 wsid:4;
-	u32 txq_idx:3;
-	u32 TxF_ID:6;
-	u32 rts_cts_nav:16;
-	u32 frame_consume_time:10;
-	u32 crate_idx:6;
-	u32 drate_idx:6;
-	u32 dl_length:12;
-	u32 RSVD_3:14;
-	u32 RESERVED[8];
-	struct ssv_rc_retry rc_params[SSV_TX_MAX_RATES];
+/* One step of the chip's retry chain (aggregates) */
+#define RCP0_COUNT		GENMASK(3, 0)
+#define RCP0_DRATE		GENMASK(9, 4)
+#define RCP0_CRATE		GENMASK(15, 10)
+#define RCP0_RTS_CTS_NAV	GENMASK(31, 16)
+#define RCP1_CONSUME_TIME	GENMASK(9, 0)
+#define RCP1_DL_LENGTH		GENMASK(21, 10)
+
+struct ssv_rc_retry {
+	__le32 w0;
+	__le32 w1;
 };
+
+struct ssv_tx_desc {
+	__le32 w0;
+	__le32 fcmd;		/* packet engine route */
+	__le32 w2;
+	__le32 w3;
+	__le32 w4;
+	__le32 w5;
+	__le32 rsvd[8];
+	struct ssv_rc_retry rc[SSV_TX_MAX_RATES];
+};
+
+/* RX descriptor and PHY info in front of every received frame */
+#define RXD0_C_TYPE		GENMASK(18, 16)
+#define RXD3_WSID		GENMASK(22, 19)
+#define RXD3_RATE_IDX		GENMASK(31, 26)
 
 struct ssv_rx_desc {
-	u32 len:16;
-	u32 c_type:3;
-	u32 f80211:1;
-	u32 qos:1;
-	u32 ht:1;
-	u32 use_4addr:1;
-	u32 l3cs_err:1;
-	u32 l4cs_err:1;
-	u32 align2:1;
-	u32 RSVD_0:2;
-	u32 psm:1;
-	u32 stype_b5b4:2;
-	u32 extra_info:1;
-	u32 edca0_used:4;
-	u32 edca1_used:5;
-	u32 edca2_used:5;
-	u32 edca3_used:5;
-	u32 mng_used:4;
-	u32 tx_page_used:9;
-	u32 hdr_offset:8;
-	u32 frag:1;
-	u32 unicast:1;
-	u32 hdr_len:6;
-	u32 RxResult:8;
-	u32 wildcard_bssid:1;
-	u32 RSVD_1:1;
-	u32 reason:6;
-	u32 payload_offset:8;
-	u32 tx_id_used:8;
-	u32 fCmdIdx:3;
-	u32 wsid:4;
-	u32 RSVD_3:3;
-	u32 rate_idx:6;
+	__le32 w0;
+	__le32 w1;
+	__le32 w2;
+	__le32 w3;
 };
+
+#define RXPHY1_AGGREGATE	BIT(18)
+#define RXPHY4_RPCI		GENMASK(7, 0)
 
 struct ssv_rxphy_info {
-	u32 len:16;
-	u32 rsvd0:16;
-	u32 mode:3;
-	u32 ch_bw:3;
-	u32 preamble:1;
-	u32 ht_short_gi:1;
-	u32 rate:7;
-	u32 rsvd1:1;
-	u32 smoothing:1;
-	u32 no_sounding:1;
-	u32 aggregate:1;
-	u32 stbc:2;
-	u32 fec:1;
-	u32 n_ess:2;
-	u32 rsvd2:8;
-	u32 l_length:12;
-	u32 l_rate:3;
-	u32 rsvd3:17;
-	u32 rsvd4;
-	u32 rpci:8;
-	u32 snr:8;
-	u32 service:16;
+	__le32 w0;
+	__le32 w1;
+	__le32 w2;
+	__le32 w3;
+	__le32 w4;
 };
 
-/* Trailing PHY info appended to CCK frames */
-struct ssv_rxphy_pad {
-	u32 rpci:8;
-	u32 snr:8;
-	u32 rsvd:16;
-};
+static_assert(sizeof(struct ssv_tx_desc) == 80);
+static_assert(sizeof(struct ssv_rx_desc) + sizeof(struct ssv_rxphy_info) == 36);
 
 #define SSV_TX_DESC_LEN		sizeof(struct ssv_tx_desc)
 #define SSV_RX_DESC_LEN		(sizeof(struct ssv_rx_desc) + sizeof(struct ssv_rxphy_info))
 
-struct ssv_host_cmd {
-	u32 len:16;
-	u32 c_type:3;
-	u32 rsvd:5;
-	u32 h_cmd:8;
-	u32 seq_no;
-	u8 data[];
-};
+/* Host command / firmware event header */
+#define HDR0_LEN		GENMASK(15, 0)
+#define HDR0_C_TYPE		GENMASK(18, 16)
+#define HDR0_ID			GENMASK(31, 24)
 
-struct ssv_host_event {
-	u32 len:16;
-	u32 c_type:3;
-	u32 rsvd:5;
-	u32 h_event:8;
-	u32 seq_no;
+struct ssv_host_hdr {
+	__le32 w0;
+	__le32 seq;
 	u8 data[];
 };
 
@@ -281,56 +229,43 @@ struct ssv_tx_rate_rpt {
 struct ssv_rc_report {
 	u8 wsid;
 	struct ssv_tx_rate_rpt rates[SSV_TX_MAX_RATES];
-	u16 ampdu_len;
-	u16 ampdu_ack_len;
-	int ack_signal;
+	__le16 ampdu_len;
+	__le16 ampdu_ack_len;
+	__le32 ack_signal;
 } __packed;
 
 struct ssv_wsid_params {
 	u8 cmd;
 	u8 wsid_idx;
-	u8 target_wsid[6];
+	u8 target_wsid[ETH_ALEN];
 	u8 hw_security;
-};
+} __packed;
 
+/* Calibration request, followed by the PHY and RF tables */
 struct ssv_iqk_cfg {
-	u32 cfg_xtal:8;
-	u32 cfg_pa:8;
-	u32 cfg_pabias_ctrl:8;
-	u32 cfg_pacascode_ctrl:8;
-	u32 cfg_tssi_trgt:8;
-	u32 cfg_tssi_div:8;
-	u32 cfg_def_tx_scale_11b:8;
-	u32 cfg_def_tx_scale_11b_p0d5:8;
-	u32 cfg_def_tx_scale_11g:8;
-	u32 cfg_def_tx_scale_11g_p0d5:8;
-	u32 cmd_sel;
-	u32 fx_sel;
-	u32 phy_tbl_size;
-	u32 rf_tbl_size;
-};
-
-/* Chip packet-buffer security table (content unused with software crypto) */
-struct ssv_hw_key {
-	u8 key[32];
-	u32 tx_pn_l;
-	u32 tx_pn_h;
-	u32 rx_pn_l;
-	u32 rx_pn_h;
+	u8 xtal;
+	u8 pa;
+	u8 pabias_ctrl;
+	u8 pacascode_ctrl;
+	u8 tssi_trgt;
+	u8 tssi_div;
+	u8 tx_scale_11b;
+	u8 tx_scale_11b_p0d5;
+	u8 tx_scale_11g;
+	u8 tx_scale_11g_p0d5;
+	u8 rsvd[2];
+	__le32 cmd_sel;
+	__le32 fx_sel;
+	__le32 phy_tbl_size;
+	__le32 rf_tbl_size;
 } __packed;
 
-struct ssv_hw_sta_key {
-	u8 pair_key_idx:4;
-	u8 group_key_idx:4;
-	u8 valid;
-	u8 reserve[2];
-	struct ssv_hw_key pair;
-} __packed;
-
-struct ssv_hw_sec {
-	struct ssv_hw_key group_key[3];
-	struct ssv_hw_sta_key sta_key[8];
-} __packed;
+/*
+ * Chip packet-buffer security table: 3 group keys of 48 bytes and 8
+ * station entries of 52.  Crypto is done by mac80211; the MAC only needs
+ * the (zeroed) table to exist.
+ */
+#define SSV_HW_SEC_SIZE		(3 * 48 + 8 * 52)
 
 /* Rate table: index == chip rate index */
 #define SSV_RATE_CCK_SHORT	4	/* 2/5.5/11 Mbps short preamble: 4..6 */
@@ -390,7 +325,6 @@ struct ssv_agg {
 };
 
 struct ssv_sta {
-	bool rx_decrypt;	/* the chip decrypts unicast CCMP from it */
 	int wsid;
 	struct ssv_rc rc;
 	struct ssv_agg agg[SSV_AGG_TIDS];
@@ -444,7 +378,6 @@ struct ssv_dev {
 
 	/* association */
 	struct mutex mutex;
-	bool hw_decrypt;
 	/* association watchdog: data frames seen, and a chip restart */
 	u32 rx_data;		/* unicast data frames received */
 	u32 assoc_rx_data;
@@ -514,8 +447,6 @@ void ssv_beacon_timing(struct ssv_dev *sd, u16 interval, u8 dtim_period);
 int ssv_beacon_set(struct ssv_dev *sd, const u8 *buf, size_t len, u8 dtim_offset);
 void ssv_beacon_release(struct ssv_dev *sd);
 int ssv_chip_reinit(struct ssv_dev *sd, bool running);
-int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
-		   const struct ieee80211_key_conf *key);
 int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_wsid_del(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_update_ctrl_rates(struct ssv_dev *sd, u32 basic_rates);

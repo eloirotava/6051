@@ -272,8 +272,7 @@ bool ssv_agg_tx(struct ssv_dev *sd, struct ieee80211_sta *sta, struct sk_buff *s
 	return taken;
 }
 
-static void agg_set_timing(struct ssv_tx_desc *d, struct ssv_rc_retry *rc,
-			   u8 rate, u32 len)
+static void agg_set_timing(struct ssv_rc_retry *rc, u8 rate, u32 len)
 {
 	const struct ssv_rate *r = &ssv_rates[rate];
 	const struct ssv_rate *c = &ssv_rates[r->ctrl];
@@ -288,11 +287,12 @@ static void agg_set_timing(struct ssv_tx_desc *d, struct ssv_rc_retry *rc,
 	l = frame - 10;
 	l = ((l - (6 + 20)) + 3) >> 2;
 
-	rc->drate = rate;
-	rc->crate = r->ctrl;
-	rc->rts_cts_nav = nav;
-	rc->frame_consume_time = (consume >> 5) + 1;
-	rc->dl_length = l + (l << 1) - 3;
+	le32p_replace_bits(&rc->w0, 2, RCP0_COUNT);
+	le32p_replace_bits(&rc->w0, rate, RCP0_DRATE);
+	le32p_replace_bits(&rc->w0, r->ctrl, RCP0_CRATE);
+	le32p_replace_bits(&rc->w0, nav, RCP0_RTS_CTS_NAV);
+	le32p_replace_bits(&rc->w1, (consume >> 5) + 1, RCP1_CONSUME_TIME);
+	le32p_replace_bits(&rc->w1, l + (l << 1) - 3, RCP1_DL_LENGTH);
 }
 
 /*
@@ -303,13 +303,14 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 			int hwq)
 {
 	struct ssv_tx_desc *d = (struct ssv_tx_desc *)sd->tx_buf;
+	struct ssv_rc_retry *rc0;
 	u8 chain[SSV_TX_MAX_RATES];
 	struct sk_buff_head *src;
 	struct sk_buff *skb, *first_skb = NULL;
 	size_t len = SSV_TX_DESC_LEN, max_len;
 	u16 start;
 	u8 id;
-	int n = 0, limit, i;
+	int n = 0, limit, i, hdrlen;
 	u8 *p;
 
 	if (agg_inflight_count(a) >= AGG_MAX_INFLIGHT)
@@ -372,32 +373,36 @@ static size_t agg_build(struct ssv_dev *sd, struct ssv_sta *ss, struct ssv_agg *
 	if (!n)
 		return 0;
 
+	hdrlen = ieee80211_hdrlen(((struct ieee80211_hdr *)first_skb->data)->frame_control);
 	memset(d, 0, SSV_TX_DESC_LEN);
-	d->len = len;
-	d->c_type = M2_TXREQ;
-	d->f80211 = 1;
-	d->qos = 1;
-	d->unicast = 1;
-	d->wsid = ss->wsid;
-	d->txq_idx = hwq;
-	d->hdr_offset = TXPB_OFFSET;
-	d->hdr_len = ieee80211_hdrlen(((struct ieee80211_hdr *)first_skb->data)->frame_control);
-	d->payload_offset = TXPB_OFFSET + d->hdr_len;
-	d->ack_policy = 1;
-	d->aggregation = 1;
-	d->RSVD_1 = 1;
-	d->do_rts_cts = 1;
-	d->tx_report = 1;
-	d->fCmd = ((hwq + M_ENG_TX_EDCA0) << 4) | M_ENG_HWHCI;
-	for (i = 0; i < SSV_TX_MAX_RATES; i++) {
-		d->rc_params[i].count = 2;
-		agg_set_timing(d, &d->rc_params[i], chain[i], len + AGG_FCS_LEN);
-	}
-	d->drate_idx = d->rc_params[0].drate;
-	d->crate_idx = d->rc_params[0].crate;
-	d->rts_cts_nav = d->rc_params[0].rts_cts_nav;
-	d->frame_consume_time = d->rc_params[0].frame_consume_time;
-	d->dl_length = d->rc_params[0].dl_length;
+	le32p_replace_bits(&d->w0, len, TXD0_LEN);
+	le32p_replace_bits(&d->w0, M2_TXREQ, TXD0_C_TYPE);
+	le32p_replace_bits(&d->w0, 1, TXD0_F80211);
+	le32p_replace_bits(&d->w0, 1, TXD0_QOS);
+	d->fcmd = cpu_to_le32(((hwq + M_ENG_TX_EDCA0) << 4) | M_ENG_HWHCI);
+	le32p_replace_bits(&d->w2, TXPB_OFFSET, TXD2_HDR_OFFSET);
+	le32p_replace_bits(&d->w2, 1, TXD2_UNICAST);
+	le32p_replace_bits(&d->w2, hdrlen, TXD2_HDR_LEN);
+	le32p_replace_bits(&d->w2, 1, TXD2_TX_REPORT);
+	le32p_replace_bits(&d->w2, 1, TXD2_ACK_POLICY);
+	le32p_replace_bits(&d->w2, 1, TXD2_AGGREGATION);
+	le32p_replace_bits(&d->w2, 1, TXD2_AGG_MARK);
+	le32p_replace_bits(&d->w2, 1, TXD2_RTS_CTS);
+	le32p_replace_bits(&d->w3, TXPB_OFFSET + hdrlen, TXD3_PAYLOAD_OFFSET);
+	le32p_replace_bits(&d->w3, ss->wsid, TXD3_WSID);
+	le32p_replace_bits(&d->w3, hwq, TXD3_TXQ_IDX);
+	for (i = 0; i < SSV_TX_MAX_RATES; i++)
+		agg_set_timing(&d->rc[i], chain[i], len + AGG_FCS_LEN);
+	/* the first step of the chain is also the plain descriptor rate */
+	rc0 = &d->rc[0];
+	le32p_replace_bits(&d->w4, le32_get_bits(rc0->w0, RCP0_CRATE), TXD4_CRATE);
+	le32p_replace_bits(&d->w4, le32_get_bits(rc0->w0, RCP0_RTS_CTS_NAV),
+			   TXD4_RTS_CTS_NAV);
+	le32p_replace_bits(&d->w4, le32_get_bits(rc0->w1, RCP1_CONSUME_TIME),
+			   TXD4_CONSUME_TIME);
+	le32p_replace_bits(&d->w5, le32_get_bits(rc0->w0, RCP0_DRATE), TXD5_DRATE);
+	le32p_replace_bits(&d->w5, le32_get_bits(rc0->w1, RCP1_DL_LENGTH),
+			   TXD5_DL_LENGTH);
 
 	dev_dbg(sd->dev, "agg: q%d id %u send %d mpdu seq %u len %zu rate %u\n",
 		hwq, id, n, skb_seq(first_skb), len, chain[0]);

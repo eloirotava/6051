@@ -67,7 +67,7 @@ u32 ssv_ht_airtime(u8 mcs, u32 len, bool sgi)
  * ACK duration for the 802.11 Duration/ID field.
  */
 static u32 ssv_set_timing(struct ssv_dev *sd, struct ssv_tx_desc *d,
-			  u8 drate, u32 len, bool rts)
+			  u8 drate, u32 len, bool unicast, bool rts)
 {
 	const struct ssv_rate *r = &ssv_rates[drate];
 	const struct ssv_rate *c = &ssv_rates[r->ctrl];
@@ -79,21 +79,21 @@ static u32 ssv_set_timing(struct ssv_dev *sd, struct ssv_tx_desc *d,
 	else
 		frame = ssv_legacy_airtime(r, len, short_pre);
 
-	if (d->unicast)
+	if (unicast)
 		ack = ssv_legacy_airtime(c, ACK_LEN, short_pre);
 	if (rts) {
 		nav = frame + ack + ssv_legacy_airtime(c, CTS_LEN, short_pre);
 		consume = nav + ssv_legacy_airtime(c, RTS_LEN, short_pre);
 	}
 
-	d->rts_cts_nav = nav;
-	d->frame_consume_time = (consume >> 5) + 1;
+	le32p_replace_bits(&d->w4, nav, TXD4_RTS_CTS_NAV);
+	le32p_replace_bits(&d->w4, (consume >> 5) + 1, TXD4_CONSUME_TIME);
 	if (r->phy == SSV_PHY_HT) {
 		u32 l = frame - HT_SIFS;
 
 		/* legacy L-SIG length spoofing the HT PPDU duration */
 		l = ((l - (6 + 20)) + 3) >> 2;
-		d->dl_length = l + (l << 1) - 3;
+		le32p_replace_bits(&d->w5, l + (l << 1) - 3, TXD5_DL_LENGTH);
 	}
 	return ack;
 }
@@ -132,9 +132,9 @@ static bool ssv_build_desc(struct ssv_dev *sd, struct sk_buff *skb,
 {
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
-	struct ssv_tx_desc *d;
-	bool report = false, rts;
-	u32 ack, len;
+	struct ssv_tx_desc desc = {}, *d = &desc;
+	bool report = false, rts, qos, unicast, more, frag;
+	u32 ack, len, ack_policy = 0;
 	int hdrlen = ssv_hdrlen(hdr);
 	u8 rate, wsid = 0x0f;
 	__le16 fc = hdr->frame_control;
@@ -160,42 +160,46 @@ static bool ssv_build_desc(struct ssv_dev *sd, struct sk_buff *skb,
 	    ssv_rates[rate].phy != SSV_PHY_CCK && ieee80211_is_data(fc))
 		rts = true;	/* the chip only does RTS/CTS, not CTS-to-self */
 
-	d = skb_push(skb, SSV_TX_DESC_LEN);
-	memset(d, 0, SSV_TX_DESC_LEN);
-	d->len = skb->len;
-	d->c_type = M2_TXREQ;
-	d->f80211 = 1;
-	d->qos = ieee80211_is_data_qos(fc);
-	d->use_4addr = ieee80211_has_a4(fc);
-	d->more_data = ieee80211_has_morefrags(fc);
-	d->stype_b5b4 = (le16_to_cpu(fc) >> 4) & 0x3;
-	d->frag = d->more_data || (le16_to_cpu(hdr->seq_ctrl) & 0xf);
-	d->unicast = !is_multicast_ether_addr(hdr->addr1);
-	d->tx_burst = d->frag;
-	d->wsid = wsid;
-	d->txq_idx = hwq;
-	d->hdr_offset = TXPB_OFFSET;
-	d->hdr_len = hdrlen;
-	d->payload_offset = TXPB_OFFSET + hdrlen;
-	d->do_rts_cts = rts ? 1 : 0;
-	d->drate_idx = rate;
-	d->crate_idx = ssv_rates[rate].ctrl;
-
-	if (!d->unicast || (info->flags & IEEE80211_TX_CTL_NO_ACK) ||
+	qos = ieee80211_is_data_qos(fc);
+	unicast = !is_multicast_ether_addr(hdr->addr1);
+	more = ieee80211_has_morefrags(fc);
+	frag = more || (le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_FRAG);
+	if (!unicast || (info->flags & IEEE80211_TX_CTL_NO_ACK) ||
 	    ieee80211_is_ctl(fc))
-		d->ack_policy = 1;
-	else if (d->qos)
-		d->ack_policy = (*ieee80211_get_qos_ctl(hdr) & 0x60) >> 5;
+		ack_policy = 1;
+	else if (qos)
+		ack_policy = (*ieee80211_get_qos_ctl(hdr) & 0x60) >> 5;
 
-	d->fCmd = ((hwq + M_ENG_TX_EDCA0) << 4) | M_ENG_HWHCI;
+	/* skb->data need not be word-aligned: build the descriptor aside */
+	le32p_replace_bits(&d->w0, skb->len + SSV_TX_DESC_LEN, TXD0_LEN);
+	le32p_replace_bits(&d->w0, M2_TXREQ, TXD0_C_TYPE);
+	le32p_replace_bits(&d->w0, 1, TXD0_F80211);
+	le32p_replace_bits(&d->w0, qos, TXD0_QOS);
+	le32p_replace_bits(&d->w0, ieee80211_has_a4(fc), TXD0_USE_4ADDR);
+	le32p_replace_bits(&d->w0, more, TXD0_MORE_DATA);
+	le32p_replace_bits(&d->w0, (le16_to_cpu(fc) >> 4) & 0x3, TXD0_STYPE_B5B4);
+	d->fcmd = cpu_to_le32(((hwq + M_ENG_TX_EDCA0) << 4) | M_ENG_HWHCI);
+	le32p_replace_bits(&d->w2, TXPB_OFFSET, TXD2_HDR_OFFSET);
+	le32p_replace_bits(&d->w2, frag, TXD2_FRAG);
+	le32p_replace_bits(&d->w2, unicast, TXD2_UNICAST);
+	le32p_replace_bits(&d->w2, hdrlen, TXD2_HDR_LEN);
+	le32p_replace_bits(&d->w2, frag, TXD2_TX_BURST);
+	le32p_replace_bits(&d->w2, ack_policy, TXD2_ACK_POLICY);
+	le32p_replace_bits(&d->w2, rts, TXD2_RTS_CTS);
+	le32p_replace_bits(&d->w3, TXPB_OFFSET + hdrlen, TXD3_PAYLOAD_OFFSET);
+	le32p_replace_bits(&d->w3, wsid, TXD3_WSID);
+	le32p_replace_bits(&d->w3, hwq, TXD3_TXQ_IDX);
+	le32p_replace_bits(&d->w4, ssv_rates[rate].ctrl, TXD4_CRATE);
+	le32p_replace_bits(&d->w5, rate, TXD5_DRATE);
 	if (report) {
-		d->RSVD_0 = SSV_TXREPORT_RC;
-		d->tx_report = 1;
+		le32p_replace_bits(&d->w0, SSV_TXREPORT_RC, TXD0_REPORT_TYPE);
+		le32p_replace_bits(&d->w2, 1, TXD2_TX_REPORT);
 	}
 
-	ack = ssv_set_timing(sd, d, rate, len, rts);
-	if (!d->tx_burst && d->ack_policy != 1)
+	ack = ssv_set_timing(sd, d, rate, len, unicast, rts);
+	if (!frag && ack_policy != 1)
 		hdr->duration_id = cpu_to_le16(ack);
+	memcpy(skb_push(skb, SSV_TX_DESC_LEN), d, SSV_TX_DESC_LEN);
 	return true;
 }
 
@@ -330,9 +334,9 @@ static int ssv_tx_thread(void *data)
 
 		/* aggregates waiting for a Block Ack need a periodic look */
 		wait_event_freezable_timeout(sd->tx_wait,
-						 ssv_queued_hw(sd) || READ_ONCE(sd->agg_kick) ||
-						 kthread_should_stop(),
-						 msecs_to_jiffies(50));
+					     ssv_queued_hw(sd) || READ_ONCE(sd->agg_kick) ||
+					     kthread_should_stop(),
+					     msecs_to_jiffies(50));
 		if (kthread_should_stop())
 			break;
 		WRITE_ONCE(sd->agg_kick, false);

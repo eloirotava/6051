@@ -18,7 +18,6 @@
 #define EFUSE_SECTIONS		((256 - 32) >> 5)
 #define EFUSE_ITEM_MAC		3
 
-#define OPMODE_STA		0
 #define RX_11B_CCA_IN_SCAN	0x20230050
 
 static const u32 ch_cfg_addr_p[] = { ADR_ABB_REGISTER_1, ADR_RX_ADC_REGISTER };
@@ -169,9 +168,10 @@ int ssv_hw_probe(struct ssv_dev *sd)
 			phy_setting[i].data = gain;
 		if (sd->tx_gain_b >= ARRAY_SIZE(wifi_tx_gain) ||
 		    sd->tx_gain_gn >= ARRAY_SIZE(wifi_tx_gain)) {
-			dev_warn(sd->dev, "TX gain level must be 0..%zu\n",
+			dev_warn(sd->dev, "TX gain level must be 1..%zu\n",
 				 ARRAY_SIZE(wifi_tx_gain) - 1);
-			sd->tx_gain_b = sd->tx_gain_gn = 0;
+			sd->tx_gain_b = 0;
+			sd->tx_gain_gn = 0;
 		}
 		if (sd->tx_gain_b)
 			phy_setting[i].data = (phy_setting[i].data & 0xffff0000) |
@@ -287,68 +287,70 @@ int ssv_set_channel(struct ssv_dev *sd, int ch)
 
 int ssv_send_cmd(struct ssv_dev *sd, u8 cmd_id, const void *data, size_t len)
 {
-	size_t total = sizeof(struct ssv_host_cmd) + len;
-	struct ssv_host_cmd *cmd;
-	u8 *buf;
+	size_t total = sizeof(struct ssv_host_hdr) + len;
+	struct ssv_host_hdr *cmd;
 	int ret;
 
-	buf = kzalloc(sdio_align_size(sd->func, total), GFP_KERNEL);
-	if (!buf)
+	cmd = kzalloc(sdio_align_size(sd->func, total), GFP_KERNEL);
+	if (!cmd)
 		return -ENOMEM;
-	cmd = (struct ssv_host_cmd *)buf;
-	cmd->c_type = HOST_CMD;
-	cmd->h_cmd = cmd_id;
-	cmd->len = total;
+	le32p_replace_bits(&cmd->w0, total, HDR0_LEN);
+	le32p_replace_bits(&cmd->w0, HOST_CMD, HDR0_C_TYPE);
+	le32p_replace_bits(&cmd->w0, cmd_id, HDR0_ID);
 	if (len)
 		memcpy(cmd->data, data, len);
-	ret = ssv_write_data(sd, buf, total);
-	kfree(buf);
+	ret = ssv_write_data(sd, (u8 *)cmd, total);
+	kfree(cmd);
 	return ret;
+}
+
+/* The firmware reads the tables as (address, value) pairs of LE words. */
+static u8 *ssv_put_table(u8 *p, const struct ssv_reg *t, size_t n)
+{
+	size_t i;
+
+	for (i = 0; i < n; i++, p += 8) {
+		put_unaligned_le32(t[i].addr, p);
+		put_unaligned_le32(t[i].data, p + 4);
+	}
+	return p;
 }
 
 int ssv_calibrate(struct ssv_dev *sd)
 {
-	size_t nphy = sizeof(phy_setting), nrf = sizeof(asic_rf_setting);
-	struct ssv_iqk_cfg cfg = {
-		.cfg_xtal = sd->xtal,
-		.cfg_tssi_trgt = 26,
-		.cfg_tssi_div = 3,
-		.cmd_sel = 0,			/* initial calibration */
-		.fx_sel = 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80,
-		.phy_tbl_size = nphy,
-		.rf_tbl_size = nrf,
-	};
+	size_t nphy = ARRAY_SIZE(phy_setting), nrf = ARRAY_SIZE(asic_rf_setting);
+	size_t len = sizeof(struct ssv_iqk_cfg) + (nphy + nrf) * 8;
+	struct ssv_iqk_cfg *cfg;
+	u32 gain = 0x80807575;	/* 11g, 11g half-step, 11b, 11b half-step */
 	size_t i;
 	u8 *buf;
 	int ret;
 	long left;
 
-	for (i = 0; i < ARRAY_SIZE(phy_setting); i++) {
-		if (phy_setting[i].addr == ADR_TX_GAIN_FACTOR) {
-			u32 g = phy_setting[i].data;
+	for (i = 0; i < nphy; i++)
+		if (phy_setting[i].addr == ADR_TX_GAIN_FACTOR && phy_setting[i].data & 0xff)
+			gain = phy_setting[i].data;
 
-			cfg.cfg_def_tx_scale_11b = g;
-			cfg.cfg_def_tx_scale_11b_p0d5 = g >> 8;
-			cfg.cfg_def_tx_scale_11g = g >> 16;
-			cfg.cfg_def_tx_scale_11g_p0d5 = g >> 24;
-		}
-	}
-	if (!cfg.cfg_def_tx_scale_11b) {
-		cfg.cfg_def_tx_scale_11b = 0x75;
-		cfg.cfg_def_tx_scale_11b_p0d5 = 0x75;
-		cfg.cfg_def_tx_scale_11g = 0x80;
-		cfg.cfg_def_tx_scale_11g_p0d5 = 0x80;
-	}
-
-	buf = kmalloc(sizeof(cfg) + nphy + nrf, GFP_KERNEL);
+	buf = kzalloc(len, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
-	memcpy(buf, &cfg, sizeof(cfg));
-	memcpy(buf + sizeof(cfg), phy_setting, nphy);
-	memcpy(buf + sizeof(cfg) + nphy, asic_rf_setting, nrf);
+	cfg = (struct ssv_iqk_cfg *)buf;
+	cfg->xtal = sd->xtal;
+	cfg->tssi_trgt = 26;
+	cfg->tssi_div = 3;
+	cfg->tx_scale_11b = gain;
+	cfg->tx_scale_11b_p0d5 = gain >> 8;
+	cfg->tx_scale_11g = gain >> 16;
+	cfg->tx_scale_11g_p0d5 = gain >> 24;
+	cfg->cmd_sel = cpu_to_le32(0);		/* initial calibration */
+	cfg->fx_sel = cpu_to_le32(GENMASK(7, 2));
+	cfg->phy_tbl_size = cpu_to_le32(nphy * 8);
+	cfg->rf_tbl_size = cpu_to_le32(nrf * 8);
+	ssv_put_table(ssv_put_table(buf + sizeof(*cfg), phy_setting, nphy),
+		      asic_rf_setting, nrf);
 
 	sd->cali_state = 0;
-	ret = ssv_send_cmd(sd, SSV_CMD_INIT_CALI, buf, sizeof(cfg) + nphy + nrf);
+	ret = ssv_send_cmd(sd, SSV_CMD_INIT_CALI, buf, len);
 	kfree(buf);
 	if (ret)
 		return ret;
@@ -373,7 +375,7 @@ static u32 ssv_pbuf_alloc_type(struct ssv_dev *sd, u32 size, u32 type)
 		ssv_reg_read(sd, ADR_WR_ALC, &val);
 		if (val)
 			break;
-		msleep(1);
+		usleep_range(1000, 2000);
 	}
 	if (!val)
 		dev_err(sd->dev, "chip buffer allocation of %u bytes failed\n", size);
@@ -443,14 +445,10 @@ static int ssv_init_mac(struct ssv_dev *sd)
 			 BIT(MTX_TSF_TIMER_EN_SFT));
 	ssv_reg_write(sd, 0xcd010004, 0x1213);
 
-	/*
-	 * Chip-side buffers: the security table (unused with software
-	 * crypto, but the MAC wants it) followed by the PHY info table.
-	 */
-	sd->key_buf[0] = ssv_pbuf_alloc(sd, sizeof(phy_info_tbl) +
-					sizeof(struct ssv_hw_sec));
+	/* chip-side buffers: security table, then the PHY info table */
+	sd->key_buf[0] = ssv_pbuf_alloc(sd, sizeof(phy_info_tbl) + SSV_HW_SEC_SIZE);
 	for (i = 1; i < SSV_NUM_KEY_BUFS; i++)
-		sd->key_buf[i] = ssv_pbuf_alloc(sd, sizeof(struct ssv_hw_sec));
+		sd->key_buf[i] = ssv_pbuf_alloc(sd, SSV_HW_SEC_SIZE);
 	if (!sd->key_buf[0])
 		return -ENOMEM;
 	/* vendor quirk: keep whatever lands at 0x800e0000 allocated */
@@ -463,14 +461,14 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	for (i = 0; i < SSV_NUM_KEY_BUFS; i++) {
 		u32 x;
 
-		for (x = 0; x < sizeof(struct ssv_hw_sec); x += 4)
+		for (x = 0; x < SSV_HW_SEC_SIZE; x += 4)
 			ssv_reg_write(sd, sd->key_buf[i] + x, 0);
 	}
 	sd->sec_buf = sd->key_buf[0];
 	ssv_reg_set_bits(sd, ADR_SCRT_SET, (sd->sec_buf >> 16) << SCRT_PKT_ID_SFT,
 			 ~SCRT_PKT_ID_I_MSK);
 
-	sd->pinfo_buf = sd->sec_buf + sizeof(struct ssv_hw_sec);
+	sd->pinfo_buf = sd->sec_buf + SSV_HW_SEC_SIZE;
 	p = phy_info_tbl;
 	for (i = 0; i < PHY_INFO_TBL1_SIZE; i++)
 		ssv_reg_write(sd, ADR_INFO0 + i * 4, *p++);
@@ -482,12 +480,11 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	ssv_reg_write(sd, ADR_INFO_IDX_ADDR, sd->pinfo_buf);
 	ssv_reg_write(sd, ADR_INFO_LEN_ADDR, sd->pinfo_buf + PHY_INFO_TBL2_SIZE * 4);
 
-	ssv_reg_write(sd, ADR_GLBLE_SET, (OPMODE_STA << OP_MODE_SFT) |
+	ssv_reg_write(sd, ADR_GLBLE_SET, (SSV_OPMODE_STA << OP_MODE_SFT) |
 		      (1 << DUP_FLT_SFT) | (TX_PKT_RSVD_SETTING << TX_PKT_RSVD_SFT) |
 		      (RXPB_OFFSET << PB_OFFSET_SFT));
 	ssv_reg_write(sd, ADR_STA_MAC_0, get_unaligned_le32(sd->mac));
 	ssv_reg_write(sd, ADR_STA_MAC_1, get_unaligned_le16(sd->mac + 4));
-	ssv_set_bssid(sd, (const u8[ETH_ALEN]){ 0 });
 	ssv_reg_write(sd, ADR_TX_ETHER_TYPE_0, 0);
 	ssv_reg_write(sd, ADR_TX_ETHER_TYPE_1, 0);
 	ssv_reg_write(sd, ADR_RX_ETHER_TYPE_0, 0);
@@ -511,7 +508,7 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	for (i = 0; i < DECI_TBL2_SIZE; i++)
 		ssv_reg_write(sd, ADR_MRX_FLT_EN0 + i * 4, deci_tbl[DECI_TBL1_SIZE + i]);
 
-	ssv_reg_set_bits(sd, ADR_GLBLE_SET, OPMODE_STA << OP_MODE_SFT, OP_MODE_MSK);
+	ssv_reg_set_bits(sd, ADR_GLBLE_SET, SSV_OPMODE_STA << OP_MODE_SFT, OP_MODE_MSK);
 	ssv_reg_write(sd, ADR_SDIO_MASK, 0xfffe1fff);
 	ssv_reg_write(sd, ADR_TX_LIMIT_INTR, 0x80000000 |
 		      (TX_LOWTHRESHOLD_ID << 16) | TX_LOWTHRESHOLD_PAGE);
@@ -643,30 +640,6 @@ int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr)
 	return ssv_wsid_cmd(sd, SSV_WSID_OP_GROUP_SET_TYPE, wsid, addr, SSV_WSID_SEC_SW);
 }
 
-/*
- * Pairwise CCMP key of hardware station @wsid for receive decryption, or
- * NULL to stop.  The MAC finds the table of station N at packet buffer
- * (security buffer id + N), and inside it the N-th station entry.
- */
-int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
-		   const struct ieee80211_key_conf *key)
-{
-	struct ssv_hw_sta_key k = {};
-	u32 base = sd->sec_buf + (wsid << 16) +
-		   offsetof(struct ssv_hw_sec, sta_key) +
-		   wsid * sizeof(struct ssv_hw_sta_key);
-	int i;
-
-	if (key)
-		memcpy(k.pair.key, key->key, min_t(size_t, key->keylen, sizeof(k.pair.key)));
-	for (i = 0; i < sizeof(k); i += 4)
-		ssv_reg_write(sd, base + i, get_unaligned_le32((u8 *)&k + i));
-	ssv_reg_set_bits(sd, ADR_SCRT_SET, (key ? SSV_SEC_CCMP : SSV_SEC_NONE) << PAIR_SCRT_SFT,
-			 PAIR_SCRT_MSK);
-	return ssv_wsid_cmd(sd, SSV_WSID_OP_PAIRWISE_SET_TYPE, wsid, addr,
-			    key ? SSV_WSID_SEC_HW : SSV_WSID_SEC_SW);
-}
-
 void ssv_wsid_del(struct ssv_dev *sd, int wsid, const u8 *addr)
 {
 	static const u32 base[] = { ADR_WSID0, ADR_WSID1 };
@@ -744,7 +717,7 @@ void ssv_beacon_release(struct ssv_dev *sd)
 		if (ssv_reg_read(sd, ADR_MTX_BCN_MISC, &val) ||
 		    !(val & MTX_AUTO_BCN_ONGOING_MSK))
 			break;
-		msleep(1);
+		usleep_range(1000, 2000);
 	}
 	for (i = 0; i < ARRAY_SIZE(sd->bcn_buf); i++) {
 		if (sd->bcn_buf[i])
