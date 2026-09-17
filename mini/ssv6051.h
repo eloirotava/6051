@@ -78,7 +78,8 @@
 #define TX_LOWTHRESHOLD_PAGE	(HW_TX_PAGES - HW_TX_PAGES / 2)
 #define TX_LOWTHRESHOLD_ID	2
 
-#define SSV_NUM_HW_STA		2
+#define SSV_NUM_HW_STA		2	/* stations the MAC tracks in registers */
+#define SSV_NUM_STA		8	/* the rest are watched by the firmware */
 #define SSV_NUM_KEY_BUFS	8
 
 #define CHIP_ID_6051Q_P1	0x00000000
@@ -110,10 +111,15 @@ enum ssv_event {
 #define SSV_TXREPORT_RC		2	/* tx_desc.RSVD_0 value asking for an RC report */
 
 enum ssv_wsid_op {
+	SSV_WSID_OP_ADD = 0,
+	SSV_WSID_OP_DEL = 1,
 	SSV_WSID_OP_PAIRWISE_SET_TYPE = 5,
 	SSV_WSID_OP_GROUP_SET_TYPE = 6,
 };
 #define SSV_WSID_SEC_SW		0
+
+#define SSV_OPMODE_STA		0
+#define SSV_OPMODE_AP		1
 #define SSV_WSID_SEC_HW		1
 
 /* ADR_SCRT_SET cipher types */
@@ -450,7 +456,16 @@ struct ssv_dev {
 	struct mutex agg_mutex;	/* TX thread vs. station removal */
 	spinlock_t sta_lock;
 	struct ieee80211_vif *vif;
-	struct ieee80211_sta __rcu *sta[SSV_NUM_HW_STA];
+
+	/* access point: beacon kept by the chip, group frames after DTIM */
+	u32 bcn_buf[2];
+	u16 bcn_len[2];
+	u8 *bcn_last;
+	size_t bcn_last_len;
+	bool dtim_bit;		/* group frames wait in chip queue 4 */
+	struct work_struct beacon_work;
+	struct delayed_work dtim_work;
+	struct ieee80211_sta __rcu *sta[SSV_NUM_STA];
 	bool short_preamble;
 	struct ieee80211_sta *rx_ba_sta;	/* owner of the single RX BA session */
 	u16 rx_ba_tid;
@@ -486,11 +501,23 @@ void ssv_set_bssid(struct ssv_dev *sd, const u8 *bssid);
 void ssv_set_slot(struct ssv_dev *sd, bool short_slot);
 int ssv_set_edca(struct ssv_dev *sd, u16 ac, bool qos,
 		 const struct ieee80211_tx_queue_params *p);
+/* ap.c */
+void ssv_ap_init(struct ssv_dev *sd);
+void ssv_ap_stop(struct ssv_dev *sd);
+void ssv_ap_update_beacon(struct ssv_dev *sd);
+void ssv_ap_group_queued(struct ssv_dev *sd);
+bool ssv_is_ap(struct ssv_dev *sd);
+
+void ssv_set_ap_mode(struct ssv_dev *sd, bool ap);
+void ssv_beacon_enable(struct ssv_dev *sd, bool on);
+void ssv_beacon_timing(struct ssv_dev *sd, u16 interval, u8 dtim_period);
+int ssv_beacon_set(struct ssv_dev *sd, const u8 *buf, size_t len, u8 dtim_offset);
+void ssv_beacon_release(struct ssv_dev *sd);
 int ssv_chip_reinit(struct ssv_dev *sd, bool running);
 int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
 		   const struct ieee80211_key_conf *key);
 int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr);
-void ssv_wsid_del(struct ssv_dev *sd, int wsid);
+void ssv_wsid_del(struct ssv_dev *sd, int wsid, const u8 *addr);
 void ssv_update_ctrl_rates(struct ssv_dev *sd, u32 basic_rates);
 void ssv_rf_enable(struct ssv_dev *sd, bool on);
 void ssv_scan_cca(struct ssv_dev *sd, bool scanning);

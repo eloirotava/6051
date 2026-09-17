@@ -86,7 +86,7 @@ static void ssv_drop_stations(struct ssv_dev *sd)
 	struct ieee80211_sta *sta;
 	int w, t;
 
-	for (w = 0; w < SSV_NUM_HW_STA; w++) {
+	for (w = 0; w < SSV_NUM_STA; w++) {
 		mutex_lock(&sd->agg_mutex);
 		sta = rcu_dereference_protected(sd->sta[w],
 						lockdep_is_held(&sd->agg_mutex));
@@ -137,10 +137,19 @@ static int ssv_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 {
 	struct ssv_dev *sd = hw->priv;
 
-	/* the same vif comes back when mac80211 restarts the device */
-	if (vif->type != NL80211_IFTYPE_STATION || (sd->vif && sd->vif != vif))
+	if (vif->type != NL80211_IFTYPE_STATION && vif->type != NL80211_IFTYPE_AP)
 		return -EOPNOTSUPP;
+	/* one interface; the same vif comes back when mac80211 restarts us */
+	if (sd->vif && sd->vif != vif)
+		return -EBUSY;
+
+	mutex_lock(&sd->mutex);
 	sd->vif = vif;
+	if (vif->type == NL80211_IFTYPE_AP) {
+		ssv_set_ap_mode(sd, true);
+		ssv_set_bssid(sd, vif->addr);
+	}
+	mutex_unlock(&sd->mutex);
 	return 0;
 }
 
@@ -148,8 +157,15 @@ static void ssv_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *
 {
 	struct ssv_dev *sd = hw->priv;
 
-	if (sd->vif == vif)
-		sd->vif = NULL;
+	if (sd->vif != vif)
+		return;
+	cancel_delayed_work_sync(&sd->dtim_work);
+	cancel_work_sync(&sd->beacon_work);
+	mutex_lock(&sd->mutex);
+	if (vif->type == NL80211_IFTYPE_AP)
+		ssv_ap_stop(sd);
+	sd->vif = NULL;
+	mutex_unlock(&sd->mutex);
 }
 
 static int ssv_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
@@ -170,7 +186,7 @@ static int ssv_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
 	return ret;
 }
 
-#define SSV_FILTERS (FIF_ALLMULTI | FIF_BCN_PRBRESP_PROMISC)
+#define SSV_FILTERS (FIF_ALLMULTI | FIF_BCN_PRBRESP_PROMISC | FIF_PSPOLL)
 
 static void ssv_configure_filter(struct ieee80211_hw *hw, unsigned int changed,
 				 unsigned int *total, u64 multicast)
@@ -195,7 +211,23 @@ static void ssv_bss_info_changed(struct ieee80211_hw *hw,
 		ssv_update_ctrl_rates(sd, info->basic_rates);
 	if (changed & BSS_CHANGED_ASSOC)
 		ssv_assoc_changed(sd, vif);
+	if (vif->type == NL80211_IFTYPE_AP) {
+		if (changed & (BSS_CHANGED_BEACON | BSS_CHANGED_BEACON_INT |
+			       BSS_CHANGED_BEACON_ENABLED))
+			ssv_ap_update_beacon(sd);
+		if (changed & BSS_CHANGED_BEACON_ENABLED)
+			ssv_beacon_enable(sd, info->enable_beacon);
+	}
 	mutex_unlock(&sd->mutex);
+}
+
+/* A station's power-save buffer changed: the beacon TIM follows. */
+static int ssv_set_tim(struct ieee80211_hw *hw, struct ieee80211_sta *sta, bool set)
+{
+	struct ssv_dev *sd = hw->priv;
+
+	schedule_work(&sd->beacon_work);
+	return 0;
 }
 
 static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
@@ -206,10 +238,10 @@ static int ssv_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	int wsid;
 
 	mutex_lock(&sd->mutex);
-	for (wsid = 0; wsid < SSV_NUM_HW_STA; wsid++)
+	for (wsid = 0; wsid < SSV_NUM_STA; wsid++)
 		if (!rcu_access_pointer(sd->sta[wsid]))
 			break;
-	if (wsid == SSV_NUM_HW_STA) {
+	if (wsid == SSV_NUM_STA) {
 		mutex_unlock(&sd->mutex);
 		return -ENOSPC;
 	}
@@ -243,18 +275,37 @@ static int ssv_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		ss->rx_decrypt = false;
 		ssv_set_rx_key(sd, ss->wsid, sta->addr, NULL);
 	}
-	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_HW_STA &&
+	if (ss->wsid >= 0 && ss->wsid < SSV_NUM_STA &&
 	    rcu_access_pointer(sd->sta[ss->wsid]) == sta) {
 		mutex_lock(&sd->agg_mutex);
 		RCU_INIT_POINTER(sd->sta[ss->wsid], NULL);
 		mutex_unlock(&sd->agg_mutex);
-		ssv_wsid_del(sd, ss->wsid);
+		ssv_wsid_del(sd, ss->wsid, sta->addr);
 	}
 	ss->wsid = -1;
 	mutex_unlock(&sd->mutex);
 	synchronize_rcu();
 	for (tid = 0; tid < SSV_AGG_TIDS; tid++)
 		ssv_agg_flush(sd, ss, tid);
+	return 0;
+}
+
+static int ssv_sta_state(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			 struct ieee80211_sta *sta, enum ieee80211_sta_state old,
+			 enum ieee80211_sta_state new)
+{
+	struct ssv_dev *sd = hw->priv;
+
+	if (old == IEEE80211_STA_NOTEXIST && new == IEEE80211_STA_NONE)
+		return ssv_sta_add(hw, vif, sta);
+	if (old == IEEE80211_STA_NONE && new == IEEE80211_STA_NOTEXIST)
+		return ssv_sta_remove(hw, vif, sta);
+	/* an AP only learns the station's rates at association */
+	if (old == IEEE80211_STA_AUTH && new == IEEE80211_STA_ASSOC) {
+		spin_lock_bh(&sd->sta_lock);
+		ssv_rc_init(sd, sta);
+		spin_unlock_bh(&sd->sta_lock);
+	}
 	return 0;
 }
 
@@ -270,6 +321,8 @@ static int ssv_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	struct ssv_dev *sd = hw->priv;
 	struct ssv_sta *ss;
 
+	if (vif->type != NL80211_IFTYPE_STATION)
+		return -EOPNOTSUPP;
 	if (cmd == SET_KEY && sta)
 		sd->assoc_keyed = true;
 	if (!sd->hw_decrypt || !sta || key->cipher != WLAN_CIPHER_SUITE_CCMP ||
@@ -372,8 +425,8 @@ static const struct ieee80211_ops ssv_ops = {
 	.config = ssv_config,
 	.configure_filter = ssv_configure_filter,
 	.bss_info_changed = ssv_bss_info_changed,
-	.sta_add = ssv_sta_add,
-	.sta_remove = ssv_sta_remove,
+	.sta_state = ssv_sta_state,
+	.set_tim = ssv_set_tim,
 	.conf_tx = ssv_conf_tx,
 	.set_key = ssv_set_key,
 	.set_rts_threshold = ssv_set_rts_threshold,
@@ -396,6 +449,7 @@ struct ssv_dev *ssv_mac_alloc(struct device *dev)
 	mutex_init(&sd->mutex);
 	mutex_init(&sd->agg_mutex);
 	INIT_WORK(&sd->restart_work, ssv_restart_work);
+	ssv_ap_init(sd);
 	spin_lock_init(&sd->sta_lock);
 	init_waitqueue_head(&sd->cali_wait);
 	SET_IEEE80211_DEV(hw, dev);
@@ -422,7 +476,8 @@ int ssv_mac_register(struct ssv_dev *sd)
 	hw->extra_tx_headroom = SSV_TX_DESC_LEN;
 	hw->max_rates = 1;
 	hw->sta_data_size = sizeof(struct ssv_sta);
-	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION);
+	hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
+				     BIT(NL80211_IFTYPE_AP);
 	hw->wiphy->flags &= ~WIPHY_FLAG_PS_ON_BY_DEFAULT;
 
 	sd->band.band = NL80211_BAND_2GHZ;

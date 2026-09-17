@@ -359,14 +359,17 @@ int ssv_calibrate(struct ssv_dev *sd)
 	return sd->cali_state > 0 ? 0 : -EIO;
 }
 
-static u32 ssv_pbuf_alloc(struct ssv_dev *sd, u32 size)
+#define PBUF_NOTYPE	0
+#define PBUF_TX		1	/* counted against the TX pages */
+
+static u32 ssv_pbuf_alloc_type(struct ssv_dev *sd, u32 size, u32 type)
 {
 	u32 val = 0;
 	int tries;
 
-	size += size % 4;
+	size = round_up(size, 4);
 	for (tries = 0; tries < 20; tries++) {
-		ssv_reg_write(sd, ADR_WR_ALC, size);	/* type 0: no queue */
+		ssv_reg_write(sd, ADR_WR_ALC, size | (type << 16));
 		ssv_reg_read(sd, ADR_WR_ALC, &val);
 		if (val)
 			break;
@@ -375,6 +378,11 @@ static u32 ssv_pbuf_alloc(struct ssv_dev *sd, u32 size)
 	if (!val)
 		dev_err(sd->dev, "chip buffer allocation of %u bytes failed\n", size);
 	return val;
+}
+
+static u32 ssv_pbuf_alloc(struct ssv_dev *sd, u32 size)
+{
+	return ssv_pbuf_alloc_type(sd, size, PBUF_NOTYPE);
 }
 
 static void ssv_pbuf_free(struct ssv_dev *sd, u32 addr)
@@ -525,6 +533,9 @@ int ssv_hw_start(struct ssv_dev *sd)
 		return ret;
 
 	sd->rx_ba_sta = NULL;
+	/* a fresh chip has no beacon buffers */
+	memset(sd->bcn_buf, 0, sizeof(sd->bcn_buf));
+	memset(sd->bcn_len, 0, sizeof(sd->bcn_len));
 	sd->started = true;
 	ret = ssv_irq_enable(sd);
 	if (ret)
@@ -615,6 +626,9 @@ int ssv_wsid_add(struct ssv_dev *sd, int wsid, const u8 *addr)
 	static const u32 mib[] = { ADR_MTX_MIB_WSID0, ADR_MTX_MIB_WSID1 };
 	int i;
 
+	if (wsid >= SSV_NUM_HW_STA)
+		return ssv_wsid_cmd(sd, SSV_WSID_OP_ADD, wsid - SSV_NUM_HW_STA, addr, 0);
+
 	ssv_reg_write(sd, base[wsid] + 4, get_unaligned_le32(addr));
 	ssv_reg_write(sd, base[wsid] + 8, get_unaligned_le16(addr + 4));
 	ssv_reg_write(sd, base[wsid], 1);
@@ -649,11 +663,91 @@ int ssv_set_rx_key(struct ssv_dev *sd, int wsid, const u8 *addr,
 			    key ? SSV_WSID_SEC_HW : SSV_WSID_SEC_SW);
 }
 
-void ssv_wsid_del(struct ssv_dev *sd, int wsid)
+void ssv_wsid_del(struct ssv_dev *sd, int wsid, const u8 *addr)
 {
 	static const u32 base[] = { ADR_WSID0, ADR_WSID1 };
 
-	ssv_reg_write(sd, base[wsid], 0);
+	if (wsid < SSV_NUM_HW_STA)
+		ssv_reg_write(sd, base[wsid], 0);
+	else
+		ssv_wsid_cmd(sd, SSV_WSID_OP_DEL, wsid - SSV_NUM_HW_STA, addr, 0);
+}
+
+/* AP: operating mode, and chip queue 4 released only after DTIM beacons */
+void ssv_set_ap_mode(struct ssv_dev *sd, bool ap)
+{
+	ssv_reg_set_bits(sd, ADR_GLBLE_SET, ap ? SSV_OPMODE_AP : SSV_OPMODE_STA,
+			 OP_MODE_MSK);
+	ssv_reg_set_bits(sd, ADR_MTX_BCN_EN_MISC, ap ? MTX_HALT_MNG_UNTIL_DTIM_MSK : 0,
+			 MTX_HALT_MNG_UNTIL_DTIM_MSK);
+}
+
+void ssv_beacon_enable(struct ssv_dev *sd, bool on)
+{
+	ssv_reg_set_bits(sd, ADR_MTX_BCN_EN_MISC, on ? BIT(MTX_BCN_TIMER_EN_SFT) : 0,
+			 BIT(MTX_BCN_TIMER_EN_SFT));
+}
+
+void ssv_beacon_timing(struct ssv_dev *sd, u16 interval, u8 dtim_period)
+{
+	ssv_reg_write(sd, ADR_MTX_BCN_PRD,
+		      ((interval ?: 100) << MTX_BCN_PERIOD_SFT) |
+		      ((max_t(u8, dtim_period, 1) - 1) << MTX_DTIM_NUM_SFT));
+}
+
+/*
+ * The MAC sends the beacon from one of two chip buffers on its own and
+ * fills in the DTIM count at @dtim_offset.  Write the new one into the
+ * buffer not in use, then point the MAC at it.
+ */
+int ssv_beacon_set(struct ssv_dev *sd, const u8 *buf, size_t len, u8 dtim_offset)
+{
+	static const u32 cfg[] = { ADR_MTX_BCN_CFG0, ADR_MTX_BCN_CFG1 };
+	u32 val;
+	int slot, i;
+
+	ssv_reg_write(sd, ADR_MTX_BCN_MISC, BIT(MTX_BCN_PKTID_CH_LOCK_SFT));
+	ssv_reg_read(sd, ADR_MTX_BCN_MISC, &val);
+	slot = ((val & MTX_BCN_CFG_VLD_MSK) >> MTX_BCN_CFG_VLD_SFT) == 1 ? 1 : 0;
+
+	if (sd->bcn_buf[slot] && sd->bcn_len[slot] < len) {
+		ssv_pbuf_free(sd, sd->bcn_buf[slot]);
+		sd->bcn_buf[slot] = 0;
+	}
+	if (!sd->bcn_buf[slot]) {
+		sd->bcn_buf[slot] = ssv_pbuf_alloc_type(sd, len, PBUF_TX);
+		sd->bcn_len[slot] = len;
+	}
+	if (!sd->bcn_buf[slot]) {
+		ssv_reg_write(sd, ADR_MTX_BCN_MISC, 0);
+		return -ENOMEM;
+	}
+	for (i = 0; i < len; i += 4)
+		ssv_reg_write(sd, sd->bcn_buf[slot] + i, get_unaligned_le32(buf + i));
+	ssv_reg_write(sd, cfg[slot], ((sd->bcn_buf[slot] & 0x0fff0000) >> 16) |
+		      (dtim_offset << MTX_DTIM_OFST0_SFT));
+	ssv_reg_write(sd, ADR_MTX_BCN_MISC, 0);
+	return 0;
+}
+
+void ssv_beacon_release(struct ssv_dev *sd)
+{
+	u32 val;
+	int i;
+
+	for (i = 0; i < 10; i++) {
+		ssv_beacon_enable(sd, false);
+		if (ssv_reg_read(sd, ADR_MTX_BCN_MISC, &val) ||
+		    !(val & MTX_AUTO_BCN_ONGOING_MSK))
+			break;
+		msleep(1);
+	}
+	for (i = 0; i < ARRAY_SIZE(sd->bcn_buf); i++) {
+		if (sd->bcn_buf[i])
+			ssv_pbuf_free(sd, sd->bcn_buf[i]);
+		sd->bcn_buf[i] = 0;
+		sd->bcn_len[i] = 0;
+	}
 }
 
 /* ACK/CTS rate for the CCK rates follows the BSS basic rate set. */

@@ -154,7 +154,7 @@ void ssv_rc_report(struct ssv_dev *sd, const struct ssv_rc_report *rpt)
 	int rate = rpt->rates[0].data_rate;
 	int i;
 
-	if (rpt->wsid >= SSV_NUM_HW_STA || rate < 0 || !rpt->rates[0].count)
+	if (rpt->wsid >= SSV_NUM_STA || rate < 0 || !rpt->rates[0].count)
 		return;
 	/* reports name the long-preamble CCK rate */
 	if (rate > 3 && rate < SSV_RATE_OFDM)

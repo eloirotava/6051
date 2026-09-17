@@ -112,7 +112,10 @@ static u8 ssv_sband_to_rate(struct ssv_dev *sd, int i)
 static u8 ssv_low_rate(struct ssv_dev *sd)
 {
 	struct ieee80211_vif *vif = sd->vif;
-	u32 basic = vif && vif->cfg.assoc ? vif->bss_conf.basic_rates : 0;
+	u32 basic = 0;
+
+	if (vif && (vif->cfg.assoc || vif->type == NL80211_IFTYPE_AP))
+		basic = vif->bss_conf.basic_rates;
 
 	return basic ? ssv_sband_to_rate(sd, __ffs(basic)) : 0;
 }
@@ -124,11 +127,11 @@ static u8 ssv_cck_preamble(struct ssv_dev *sd, u8 rate)
 	return rate;
 }
 
-static bool ssv_build_desc(struct ssv_dev *sd, struct sk_buff *skb, int hwq)
+static bool ssv_build_desc(struct ssv_dev *sd, struct sk_buff *skb,
+			   struct ieee80211_sta *sta, int hwq)
 {
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
-	struct ieee80211_sta *sta = NULL;
 	struct ssv_tx_desc *d;
 	bool report = false, rts;
 	u32 ack, len;
@@ -140,19 +143,14 @@ static bool ssv_build_desc(struct ssv_dev *sd, struct sk_buff *skb, int hwq)
 	    skb->len + SSV_TX_DESC_LEN > SSV_MAX_FRAME)
 		return false;
 
-	rcu_read_lock();
-	if (!is_multicast_ether_addr(hdr->addr1)) {
-		sta = rcu_dereference(sd->sta[0]);
-		if (sta && !ether_addr_equal(sta->addr, hdr->addr1))
-			sta = NULL;
-	}
+	if (sta && ((struct ssv_sta *)sta->drv_priv)->wsid < 0)
+		sta = NULL;
 	if (sta)
 		wsid = ((struct ssv_sta *)sta->drv_priv)->wsid;
 	if (sta && ieee80211_is_data(fc) && skb->protocol != cpu_to_be16(ETH_P_PAE))
 		rate = ssv_rc_get(sd, (struct ssv_sta *)sta->drv_priv, &report);
 	else
 		rate = ssv_low_rate(sd);
-	rcu_read_unlock();
 	rate = ssv_cck_preamble(sd, rate);
 
 	len = skb->len + FCS_LEN;
@@ -384,7 +382,9 @@ void ssv_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 	struct ssv_dev *sd = hw->priv;
 	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+	struct ieee80211_sta *sta = control ? control->sta : NULL;
 	__le16 fc = hdr->frame_control;
+	bool ap = ssv_is_ap(sd);
 	int hwq;
 
 	if (!sd->started) {
@@ -392,18 +392,26 @@ void ssv_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
 		return;
 	}
 
-	if (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc))
+	/*
+	 * Chip queue 4 carries management frames for a station; an AP uses
+	 * it for group frames held until the DTIM beacon.
+	 */
+	if (ap && (info->flags & IEEE80211_TX_CTL_SEND_AFTER_DTIM))
+		hwq = HW_TXQ_MGMT;
+	else if (!ap && (ieee80211_is_mgmt(fc) || ieee80211_is_any_nullfunc(fc)))
 		hwq = HW_TXQ_MGMT;
 	else if (skb->protocol == cpu_to_be16(ETH_P_PAE))
 		hwq = ac_to_hwq[IEEE80211_AC_VO];
 	else
 		hwq = ac_to_hwq[skb_get_queue_mapping(skb) & 3];
 
-	if (control && control->sta && ssv_agg_tx(sd, control->sta, skb)) {
+	if (sta && ssv_agg_tx(sd, sta, skb)) {
 		ssv_tx_kick(sd);
 	} else {
 		info->flags &= ~IEEE80211_TX_CTL_AMPDU;
-		if (!ssv_build_desc(sd, skb, hwq)) {
+		if (ap && hwq == HW_TXQ_MGMT)
+			ssv_ap_group_queued(sd);
+		if (!ssv_build_desc(sd, skb, sta, hwq)) {
 			ieee80211_free_txskb(hw, skb);
 			return;
 		}

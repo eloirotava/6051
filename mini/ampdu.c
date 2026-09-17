@@ -433,7 +433,7 @@ bool ssv_agg_pump(struct ssv_dev *sd, bool *blocked)
 	int w, t;
 
 	__skb_queue_head_init(&drop);
-	for (w = 0; w < SSV_NUM_HW_STA; w++) {
+	for (w = 0; w < SSV_NUM_STA; w++) {
 		struct ieee80211_sta *sta;
 		struct ssv_sta *ss;
 
@@ -496,7 +496,7 @@ static struct ssv_agg *agg_lookup(struct ssv_dev *sd, u8 wsid, u8 tid,
 {
 	struct ieee80211_sta *sta;
 
-	if (wsid >= SSV_NUM_HW_STA || tid >= SSV_AGG_TIDS)
+	if (wsid >= SSV_NUM_STA || tid >= SSV_AGG_TIDS)
 		return NULL;
 	sta = rcu_dereference(sd->sta[wsid]);
 	if (!sta)
