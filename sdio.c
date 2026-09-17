@@ -143,16 +143,25 @@ void ssv_set_bus_clock(struct ssv_dev *sd, u32 hz)
 	struct mmc_host *host = sd->func->card->host;
 
 	/*
-	 * The vendor driver switches the bus clock behind the MMC core's
-	 * back; keep that, but only within what the host allows.  37.5 MHz
-	 * (an odd divider on RK322x) breaks the bus, 25 and 50 MHz work.
+	 * Until the firmware has set up the chip PLL, the chip cannot keep
+	 * up with a high-speed bus (reads come back corrupted), so bring-up
+	 * runs at 25 MHz and the clock the MMC core negotiated is restored
+	 * afterwards.  The core has no interface for this, hence set_ios.
 	 */
 	hz = clamp(hz, host->f_min, host->f_max);
+	if (hz == host->ios.clock)
+		return;
 	sdio_claim_host(sd->func);
 	host->ios.clock = hz;
 	host->ops->set_ios(host, &host->ios);
 	sdio_release_host(sd->func);
 	msleep(20);
+}
+
+/* Slow bus for chip bring-up, never faster than what the core negotiated */
+static void ssv_bus_slow(struct ssv_dev *sd)
+{
+	ssv_set_bus_clock(sd, min(sd->bus_clock, SDIO_CLOCK_INIT));
 }
 
 static int ssv_write_sram(struct ssv_dev *sd, u32 addr, const u8 *data, u32 len)
@@ -250,13 +259,12 @@ int ssv_load_firmware(struct ssv_dev *sd)
 		dev_err(sd->dev, "cannot load %s: %d\n", SSV_FIRMWARE, ret);
 		return ret;
 	}
-	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
+	ssv_bus_slow(sd);
 	ret = ssv_upload_firmware(sd, fw);
 	release_firmware(fw);
 	if (ret)
 		return ret;
-	if (sd->sdio_clock > SDIO_CLOCK_FW)
-		ssv_set_bus_clock(sd, sd->sdio_clock);
+	ssv_set_bus_clock(sd, sd->bus_clock);
 	return 0;
 }
 
@@ -351,7 +359,7 @@ int ssv_chip_reinit(struct ssv_dev *sd, bool running)
 		ssv_pmu_sleep(sd);
 		msleep(50);
 	}
-	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
+	ssv_bus_slow(sd);
 	ret = ssv_sdio_init(sd);
 	if (ret)
 		return ret;
@@ -373,7 +381,6 @@ static void ssv_read_board_config(struct ssv_dev *sd)
 	sd->ldo = true;
 	sd->tx_gain_b = 0;
 	sd->tx_gain_gn = 0;
-	sd->sdio_clock = SDIO_CLOCK_FW;
 	if (!np)
 		return;
 
@@ -398,8 +405,6 @@ static void ssv_read_board_config(struct ssv_dev *sd)
 		sd->tx_gain_b = val;
 		sd->tx_gain_gn = val;
 	}
-	if (!of_property_read_u32(np, "ssv,sdio-max-clock-hz", &val))
-		sd->sdio_clock = val;
 }
 
 static struct sdio_func *ssv_reboot_func;
@@ -442,7 +447,8 @@ static int ssv_sdio_probe(struct sdio_func *func, const struct sdio_device_id *i
 	ssv_read_board_config(sd);
 
 	func->card->quirks |= MMC_QUIRK_LENIENT_FN0 | MMC_QUIRK_BLKSZ_FOR_BYTE_MODE;
-	ssv_set_bus_clock(sd, SDIO_CLOCK_FW);
+	sd->bus_clock = func->card->host->ios.clock;
+	ssv_bus_slow(sd);
 	ret = ssv_sdio_init(sd);
 	if (ret) {
 		dev_err(&func->dev, "SDIO init failed: %d\n", ret);

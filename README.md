@@ -76,9 +76,11 @@ No boot, o módulo é carregado automaticamente pelo ID SDIO (3030:3030).
 
 ## Configuração (device tree)
 
-Sem nada no device tree, o driver usa cristal de 24 MHz, LDO interno,
-potência padrão do chip e barramento a 25 MHz, o que funciona na maioria
-das boxes. Para ajustar, descreva a função SDIO como filha do controlador
+Sem nada no device tree, o driver usa cristal de 24 MHz, LDO interno e
+potência padrão do chip, o que funciona na maioria das boxes. O clock do
+SDIO é o que o kernel negocia com o controlador (até 50 MHz); o driver só
+o reduz para 25 MHz enquanto inicializa o chip e carrega o firmware. Para
+limitá-lo, use a propriedade padrão `max-frequency` no nó do controlador. Para ajustar, descreva a função SDIO como filha do controlador
 MMC (binding completo em `Documentation/devicetree/bindings/net/wireless/ssv,ssv6051.yaml`):
 
 | propriedade | valores | padrão |
@@ -86,7 +88,6 @@ MMC (binding completo em `Documentation/devicetree/bindings/net/wireless/ssv,ssv
 | `ssv,xtal-hz` | 24000000, 26000000, 40000000 | 24000000 |
 | `ssv,dcdc` | presente = alimentação por DC-DC | LDO |
 | `ssv,tx-gain-level` | 1 (maior potência) a 14 (menor) | padrão do chip |
-| `ssv,sdio-max-clock-hz` | clock depois do firmware (50000000 funciona no RK322x; 37500000 não) | 25000000 |
 
 Exemplo de overlay para RK322x no Armbian (salve como
 `/boot/overlay-user/ssv6051.dts`, compile com
@@ -110,7 +111,6 @@ Exemplo de overlay para RK322x no Armbian (salve como
 				compatible = "ssv,ssv6051";
 				reg = <1>;
 				ssv,tx-gain-level = <14>;
-				ssv,sdio-max-clock-hz = <50000000>;
 			};
 		};
 	};

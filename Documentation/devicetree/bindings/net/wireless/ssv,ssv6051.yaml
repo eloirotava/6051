@@ -13,7 +13,10 @@ description:
   The SSV6051 is a 2.4 GHz 802.11b/g/n chip with an SDIO interface.  The
   node describes SDIO function 1 and is a child of the MMC host.  All
   properties are optional; without them the driver assumes a 24 MHz
-  crystal, the internal LDO, the default transmit power and a 25 MHz bus.
+  crystal, the internal LDO and the default transmit power.  The bus
+  clock is the one negotiated by the MMC core, lowered to 25 MHz only
+  while the chip is brought up; limit it with the host's max-frequency
+  if needed.
 
 properties:
   compatible:
@@ -42,12 +45,6 @@ properties:
     minimum: 1
     maximum: 14
 
-  ssv,sdio-max-clock-hz:
-    description:
-      SDIO clock used once the firmware runs; the firmware is always
-      loaded at 25 MHz.  Limited by the host's own maximum.
-    default: 25000000
-
 required:
   - compatible
   - reg
@@ -64,6 +61,5 @@ examples:
             compatible = "ssv,ssv6051";
             reg = <1>;
             ssv,tx-gain-level = <14>;
-            ssv,sdio-max-clock-hz = <50000000>;
         };
     };

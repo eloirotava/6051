@@ -41,7 +41,7 @@
 
 #define SDIO_BLOCK_SIZE		128
 #define SDIO_OUTPUT_TIMING	3
-#define SDIO_CLOCK_FW		25000000
+#define SDIO_CLOCK_INIT		25000000U
 #define SSV_MAX_FRAME		4096
 #define SSV_TX_BUF_SIZE		16384
 
@@ -341,11 +341,11 @@ struct ssv_dev {
 	bool ldo;
 	u32 tx_gain_b;
 	u32 tx_gain_gn;
-	u32 sdio_clock;
 	u32 chip_id;
 	u8 mac[ETH_ALEN];
 
 	/* SDIO */
+	u32 bus_clock;		/* negotiated by the MMC core */
 	u32 data_port;
 	u32 reg_port;
 	u8 *io_buf;		/* DMA-safe scratch, used under the SDIO host lock */
