@@ -11,8 +11,8 @@ Driver pequeno, limpo, com cara de mainline, para o SSV6051P em SDIO
 
 - modo estação (cliente): WPA2-PSK, WPA2-Enterprise/PEAP (a cifragem é
   por software no mac80211, então PEAP/eduroam funciona sem nada especial);
-- modo AP (hotspot) com `hostapd`, uma interface por vez (sem estação e AP
-  simultâneos);
+- modo AP (hotspot) com `hostapd`, uma interface por vez. Estação e AP
+  simultâneos **não são possíveis** neste chip (ver "Modo AP");
 - funciona em 32 e 64 bits (sem `long` em struct de fio, tudo `__packed`,
   `get/put_unaligned_le*`, buffers DMA-safe para SDIO);
 - **sem arquivo `.cfg`**: configuração por parâmetros de módulo ou por
@@ -60,6 +60,24 @@ pelo systemd-networkd, internet pelo `end0`). Um celular associou, pegou
 IP e fez 10 down / 8 up. Um TP-Link usado como cliente (interface estação
 no mesmo rádio dos APs dele) associou mas descartava os dados recebidos
 ("rx drop misc"); não investigado a pedido do dono.
+
+**Estação + AP simultâneos: inviável no hardware.** O MAC tem um único
+endereço próprio (`ADR_STA_MAC`) e um único BSSID. Experimentos:
+- estação com o MAC em modo AP e BSSID qualquer: funciona;
+- AP com `STA_MAC` diferente do MAC do AP: o celular vê o beacon, mas a
+  autenticação nunca chega ao host (o MAC filtra e não dá ACK para
+  endereços que não sejam o `STA_MAC`).
+Como o mac80211 exige MACs diferentes para estação e AP, não há saída.
+O legado declara a combinação (herança de P2P), mas só programa o
+endereço da primeira interface.
+
+**Não use o TP-Link como cliente de teste**: criar/apagar uma interface
+estação no rádio 2.4 GHz dele travou a recepção desse rádio (derrubou o
+AP31 da casa até `wifi up radio1`). Testes de cliente do AP: só com o
+celular do dono.
+
+`init_mac` zera BSSID, timer de beacon e a retenção da fila 4 a cada
+start, para nada de uma sessão de AP sobreviver.
 
 Vazão (iperf3 contra o Cudy, rk a poucos cm do TP-Link, mesmas condições):
 

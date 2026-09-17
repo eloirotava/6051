@@ -417,7 +417,11 @@ static int ssv_init_mac(struct ssv_dev *sd)
 	}
 
 	ssv_reg_write(sd, ADR_TXQ4_MTX_Q_AIFSN, 0xffff2101);
-	ssv_reg_set_bits(sd, ADR_MTX_BCN_EN_MISC, 0, MTX_HALT_MNG_UNTIL_DTIM_MSK);
+	/* nothing of an earlier AP session may survive: DTIM hold, beacon, BSSID */
+	ssv_reg_set_bits(sd, ADR_MTX_BCN_EN_MISC, 0,
+			 MTX_HALT_MNG_UNTIL_DTIM_MSK | BIT(MTX_BCN_TIMER_EN_SFT));
+	ssv_reg_write(sd, ADR_BSSID_0, 0);
+	ssv_reg_write(sd, ADR_BSSID_1, 0);
 	ssv_reg_write(sd, ADR_CONTROL, 0x12000006);
 	ssv_reg_write(sd, ADR_RX_TIME_STAMP_CFG, (28 << MRX_STP_OFST_SFT) | 1);
 	ssv_reg_write(sd, ADR_HCI_TX_RX_INFO_SIZE,
