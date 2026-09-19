@@ -424,7 +424,13 @@ static void agg_send_bar(struct ssv_dev *sd, struct ieee80211_sta *sta,
 			return;
 		start = skb_seq(skb);
 	}
-	ieee80211_send_bar(sd->vif, sta->addr, tid, start);
+	/*
+	 * The value is copied into the frame as it is given, and the field
+	 * it lands in is a sequence control: the number belongs above the
+	 * four fragment bits.  A bare sequence number points the peer at a
+	 * window sixteen times too far back.
+	 */
+	ieee80211_send_bar(sd->vif, sta->addr, tid, IEEE80211_SN_TO_SEQ(start));
 }
 
 /*
